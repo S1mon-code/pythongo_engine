@@ -317,18 +317,35 @@ if abs(optimal - current) <= buffer:
 pythongo_engine/                     ← Mac开发仓库
 ├── docs/
 │   ├── ARCHITECTURE.md              # 本文件
+│   ├── MODULE_REFERENCE.md          # 模块参考手册
 │   ├── RESEARCH_REPORT.md           # PythonGO + 飞书 deep research
 │   └── OPERATIONAL_ISSUES_RESEARCH.md # 9个运维问题详细调研
 │
-├── src/
-│   └── PortfolioIronLong.py         # ★ 部署文件 — 放到Windows无限易运行
+├── src/                             # ★ 部署目录 — 整个复制到 self_strategy/
+│   ├── TestFullModule.py            # 测试策略 (M1双均线 + 全模块)
+│   ├── DailyV9_ROC_OBV.py          # 日线策略 (旧单文件版, 待更新)
+│   ├── PortfolioIronLong.py         # Portfolio策略 (旧单文件版, 待更新)
+│   └── modules/                     # ★ 通用运维模块 (所有策略共享)
+│       ├── __init__.py
+│       ├── feishu.py                # 飞书非阻塞通知
+│       ├── persistence.py           # 状态持久化 (JSON原子写)
+│       ├── trading_day.py           # 交易日检测 (+4小时法)
+│       ├── risk.py                  # 止损体系 (6种止损)
+│       ├── slippage.py              # 滑点记录
+│       ├── heartbeat.py             # 心跳监控
+│       ├── order_monitor.py         # 订单超时
+│       ├── performance.py           # 绩效追踪
+│       ├── rollover.py              # 换月提醒
+│       └── position_sizing.py       # Vol Targeting + Carver Buffer
 │
 ├── tests/                           # Mac上的单元测试
-│
-├── scripts/
-│   └── signal_compare.py            # PythonGO信号 vs QBase回测信号对比
-│
 └── README.md
+```
+
+### 部署方式
+```bash
+# 将 src/ 下所有内容复制到Windows无限易
+copy src/* → pyStrategy/self_strategy/
 ```
 
 ---

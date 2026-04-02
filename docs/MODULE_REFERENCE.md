@@ -2,6 +2,37 @@
 
 所有模块已在无限易模拟盘测试通过 (2026-04-02)。
 
+## 模块架构
+
+```
+策略文件 (TestFullModule.py)
+  ├── from modules.feishu import feishu
+  ├── from modules.persistence import save_state, load_state
+  ├── from modules.trading_day import get_trading_day
+  ├── from modules.risk import check_stops
+  ├── from modules.slippage import SlippageTracker
+  ├── from modules.heartbeat import HeartbeatMonitor
+  ├── from modules.order_monitor import OrderMonitor
+  ├── from modules.performance import PerformanceTracker
+  ├── from modules.rollover import check_rollover
+  └── from modules.position_sizing import calc_optimal_lots, apply_buffer
+```
+
+## 模块清单
+
+| 模块 | 文件 | 类型 | 说明 |
+|------|------|------|------|
+| 飞书通知 | `modules/feishu.py` | 函数 | `feishu(action, symbol, msg)` 非阻塞 |
+| 状态持久化 | `modules/persistence.py` | 函数 | `save_state(data)` / `load_state()` |
+| 交易日检测 | `modules/trading_day.py` | 函数 | `get_trading_day()` → "20260402" |
+| 止损体系 | `modules/risk.py` | 函数 | `check_stops(...)` → (action, reason) |
+| 滑点记录 | `modules/slippage.py` | 类 | `SlippageTracker` |
+| 心跳监控 | `modules/heartbeat.py` | 类 | `HeartbeatMonitor` |
+| 订单超时 | `modules/order_monitor.py` | 类 | `OrderMonitor` |
+| 绩效追踪 | `modules/performance.py` | 类 | `PerformanceTracker` |
+| 换月提醒 | `modules/rollover.py` | 函数 | `check_rollover(id)` → (level, days) |
+| 仓位计算 | `modules/position_sizing.py` | 函数 | `calc_optimal_lots()` / `apply_buffer()` |
+
 ---
 
 ## 1. PythonGO API 正确用法
