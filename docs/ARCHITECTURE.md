@@ -75,10 +75,20 @@ pos = self.get_position(instrument_id).net_position
 
 ### 关键规则
 - **Next-bar规则**: 信号在当前bar产生，存入`self._pending`，下一根bar开头执行
+- **执行后return**: 执行pending后本bar直接return，避免持仓未更新导致重复信号
 - **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)`
 - **order_id追踪**: 用set追踪委托ID，在on_trade/on_order_cancel中清理
 - **market=True**: 市价单，price参数仅用于显示
 - **self.output()**: 不用print()
+
+### API踩坑记录 (2026-04-02实测)
+- **`get_account_fund_data("")` 会崩溃！** 正确用法：
+  ```python
+  investor = self.get_investor_data(1)
+  account = self.get_account_fund_data(investor.investor_id)
+  ```
+- AccountData属性: balance, available, position_profit, close_profit, margin, commission, risk
+- 建议在on_start中缓存investor_id，后续复用
 
 ### PythonGO数据特点
 - **只提供tick数据** — K线全靠KLineGenerator从tick合成
@@ -339,24 +349,60 @@ Section 9: STRATEGY       — PythonGO主入口类 (BaseStrategy)
 
 ---
 
+## 测试进度 (2026-04-02)
+
+### 已测试通过 ✅
+- [x] 基础交易: 开仓/加仓/平仓 (M1 MA3/MA7)
+- [x] Next-bar规则 + 执行后return
+- [x] 撤挂单 + order_id追踪
+- [x] K线图表widget
+- [x] 飞书非阻塞通知 (daemon线程)
+- [x] 飞书卡片: 开仓/加仓/减仓/平仓/策略启动/策略停止
+- [x] get_account_fund_data 正确调用 (investor_id)
+- [x] 硬止损 (价格)
+- [x] 移动止损
+- [x] 权益止损 (2%)
+- [x] Portfolio Stops (回撤 -10/-15/-20%)
+- [x] 单日止损 (-5%)
+- [x] 保证金检查
+- [x] 文件写入 (os/json)
+
+### 待测试 ⏳
+- [ ] 状态持久化 (JSON保存→暂停→重启→恢复)
+- [ ] 重启持仓恢复 (有仓暂停→重启)
+- [ ] 交易日切换检测 (+4小时法)
+- [ ] Carver 10% Buffer
+- [ ] 每日08:00回顾推送
+
+### 已知问题 ⚠️
+- `get_account_fund_data("")` 传空字符串崩溃 → 必须传investor_id
+- 执行pending后必须return，否则同bar重复生成信号
+
 ## 开发计划
 
-### Phase 1: 重写PortfolioIronLong.py
+### Phase 1: 模块验证 (进行中)
+- [x] 基础交易验证
+- [x] 飞书通知验证
+- [x] 止损体系验证
+- [ ] 持久化 + 重启恢复验证
+- [ ] 交易日切换验证
+- [ ] Carver Buffer验证
+
+### Phase 2: 策略转换
 - [ ] 替换v6/v7/v8/v9 → v27(daily) + v18(1h)
 - [ ] 移植SuperTrend + TRIX + OI_Momentum指标
 - [ ] 双KLineGenerator (D1 + H1)
 - [ ] OI数组手动收集
 - [ ] Net position管理
-- [ ] 9个运维模块全部内置
+- [ ] DailyV9_ROC_OBV.py 更新为正确API
 
-### Phase 2: 模拟盘验证
-- [ ] Windows安装无限易模拟客户端
+### Phase 3: 模拟盘全链路
 - [ ] 验证D1 K线在夜盘的行为
 - [ ] 验证OI数据可用性
 - [ ] 信号对比: PythonGO vs QBase
-- [ ] 全链路测试 (下单→成交→飞书通知→状态持久化)
+- [ ] 全链路测试 (下单→止损→飞书→持久化→重启)
 
-### Phase 3: 实盘
+### Phase 4: 实盘
 - [ ] 程序化报备
 - [ ] Windows VPS + 自动重启
 - [ ] 50%仓位试运行一个月
