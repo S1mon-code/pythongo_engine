@@ -2,20 +2,33 @@
 
 所有模块已在无限易模拟盘测试通过 (2026-04-02)。
 
-## 模块架构
+## 部署位置
+
+modules/ 放在 `pyStrategy/modules/` (与pythongo/同级), **不是** self_strategy/ 下。
 
 ```
-策略文件 (TestFullModule.py)
-  ├── from modules.feishu import feishu
-  ├── from modules.persistence import save_state, load_state
-  ├── from modules.trading_day import get_trading_day
-  ├── from modules.risk import check_stops
-  ├── from modules.slippage import SlippageTracker
-  ├── from modules.heartbeat import HeartbeatMonitor
-  ├── from modules.order_monitor import OrderMonitor
-  ├── from modules.performance import PerformanceTracker
-  ├── from modules.rollover import check_rollover
-  └── from modules.position_sizing import calc_optimal_lots, apply_buffer
+pyStrategy/
+  pythongo/           ← 框架
+  modules/            ← ★ 我们的模块
+  self_strategy/
+    TestFullModule.py ← 策略文件
+```
+
+## 模块导入
+
+```python
+# 策略文件中:
+from modules.feishu import feishu
+from modules.persistence import save_state, load_state
+from modules.trading_day import get_trading_day
+from modules.risk import check_stops
+from modules.slippage import SlippageTracker
+from modules.heartbeat import HeartbeatMonitor
+from modules.order_monitor import OrderMonitor
+from modules.performance import PerformanceTracker
+from modules.rollover import check_rollover
+from modules.position_sizing import calc_optimal_lots, apply_buffer
+```
 ```
 
 ## 模块清单

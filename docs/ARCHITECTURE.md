@@ -343,10 +343,21 @@ pythongo_engine/                     ← Mac开发仓库
 ```
 
 ### 部署方式
-```bash
-# 将 src/ 下所有内容复制到Windows无限易
-copy src/* → pyStrategy/self_strategy/
 ```
+pyStrategy/                      ← 无限易Python根目录
+  pythongo/                      ← 框架(自带, 不动)
+  modules/                       ← ★ 我们的模块放这里 (与pythongo同级)
+    __init__.py
+    feishu.py
+    persistence.py
+    ...
+  self_strategy/
+    TestFullModule.py            ← ★ 策略文件放这里
+    DailyV9_ROC_OBV.py
+```
+
+策略文件中 `from modules.feishu import feishu` 即可使用。
+modules/ 必须放在 pyStrategy/ 下 (与pythongo/同级), 不是self_strategy/下。
 
 ---
 

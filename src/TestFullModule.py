@@ -3,23 +3,8 @@
   TestFullModule — M1 双均线 + 全模块 (模块化版)
 ================================================================================
 
-  所有运维模块通过 modules/ 目录导入, 主文件只有策略逻辑.
-
-  部署: 将 src/ 下所有内容复制到无限易 pyStrategy/self_strategy/
-        self_strategy/
-          ├── TestFullModule.py      # 本文件
-          └── modules/               # 模块目录
-              ├── __init__.py
-              ├── feishu.py
-              ├── persistence.py
-              ├── trading_day.py
-              ├── risk.py
-              ├── slippage.py
-              ├── heartbeat.py
-              ├── order_monitor.py
-              ├── performance.py
-              ├── rollover.py
-              └── position_sizing.py
+  部署: modules/ 和 TestFullModule.py 放在同一个目录
+        (self_strategy/ 或 pyStrategy/ 均可)
 
 ================================================================================
 """
@@ -33,7 +18,7 @@ from pythongo.classdef import KLineData, OrderData, TickData, TradeData
 from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
-# ── 模块导入 ──
+# ── 模块导入 (modules放在 pyStrategy/modules/) ──
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
 from modules.trading_day import get_trading_day
