@@ -33,7 +33,7 @@ def _post(action, symbol, msg):
     c = COLORS.get(action, "grey")
     l = LABELS.get(action, action)
     try:
-        requests.post(WEBHOOK, json={
+        resp = requests.post(WEBHOOK, json={
             "msg_type": "interactive",
             "card": {
                 "header": {"title": {"tag": "plain_text", "content": f"{l} | {symbol}"}, "template": c},
@@ -41,8 +41,10 @@ def _post(action, symbol, msg):
                               "content": f"{msg}\n\n---\n*{time.strftime('%Y-%m-%d %H:%M:%S')}*"}}],
             },
         }, timeout=3)
-    except Exception:
-        pass
+        if resp.status_code != 200:
+            print(f"[feishu] HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"[feishu] 发送失败: {type(e).__name__}: {e}")
 
 
 def feishu(action, symbol, msg):

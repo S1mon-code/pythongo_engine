@@ -2,18 +2,19 @@
 
 用法:
     from modules.slippage import SlippageTracker
-    slip = SlippageTracker()
+    slip = SlippageTracker("i2509")
     slip.set_signal_price(800.0)          # 信号产生时
     ticks = slip.on_fill(800.5, 3, "buy") # 成交时 → 1.0 ticks
     stats = slip.get_stats()              # {"avg": 1.0, "max": 1.0, "n": 1}
 """
 import time
 
-TICK_SIZE = 0.5
+from modules.contract_info import get_tick_size
 
 
 class SlippageTracker:
-    def __init__(self):
+    def __init__(self, instrument_id: str):
+        self._tick_size = get_tick_size(instrument_id)
         self._signal_px = 0.0
         self._records = []
 
@@ -29,7 +30,7 @@ class SlippageTracker:
             raw = fill_px - self._signal_px
         else:
             raw = self._signal_px - fill_px
-        ticks = raw / TICK_SIZE
+        ticks = raw / self._tick_size
         self._records.append({
             "signal": self._signal_px, "fill": float(fill_px),
             "ticks": ticks, "lots": int(lots), "dir": direction,

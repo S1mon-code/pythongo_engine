@@ -2,7 +2,7 @@
 
 用法:
     from modules.heartbeat import HeartbeatMonitor
-    hb = HeartbeatMonitor(interval_min=30)
+    hb = HeartbeatMonitor("i2509", interval_min=30)
     alerts = hb.check("i2509")  # 在on_tick中调用
     for atype, msg in alerts:
         if atype == "no_tick": feishu("no_tick", symbol, msg)
@@ -10,13 +10,14 @@
 import time
 from datetime import datetime
 
-# DCE铁矿石交易时段
-_SESSIONS = [((9, 0), (11, 30)), ((13, 30), (15, 0)), ((21, 0), (23, 0))]
+from modules.contract_info import get_sessions
+
 NO_TICK_TIMEOUT = 60  # 秒
 
 
 class HeartbeatMonitor:
-    def __init__(self, interval_min=30):
+    def __init__(self, instrument_id: str, interval_min=30):
+        self._sessions = get_sessions(instrument_id)
         self._interval = interval_min * 60
         self._last_hb = 0.0
         self._last_tick = 0.0
@@ -45,7 +46,6 @@ class HeartbeatMonitor:
 
         return alerts
 
-    @staticmethod
-    def _in_session():
+    def _in_session(self):
         m = datetime.now().hour * 60 + datetime.now().minute
-        return any(sh * 60 + sm <= m < eh * 60 + em for (sh, sm), (eh, em) in _SESSIONS)
+        return any(sh * 60 + sm <= m < eh * 60 + em for (sh, sm), (eh, em) in self._sessions)

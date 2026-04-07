@@ -2,24 +2,25 @@
 
 用法:
     from modules.performance import PerformanceTracker
-    perf = PerformanceTracker()
+    perf = PerformanceTracker("i2509")
     perf.on_close(entry_px=800.0, exit_px=810.0, lots=3)  # 平仓时
     summary = perf.get_summary()  # {"n":1, "wr":100, "total":30000, ...}
     report = perf.format_report("i2509")  # markdown周报
 """
 import time
 
-MULTIPLIER = 100
+from modules.contract_info import get_multiplier
 
 
 class PerformanceTracker:
-    def __init__(self):
+    def __init__(self, instrument_id: str):
+        self._multiplier = get_multiplier(instrument_id)
         self._trades = []
         self._total_pnl = 0.0
 
     def on_close(self, entry_px, exit_px, lots):
         """记录平仓. 返回绝对盈亏."""
-        pnl = (exit_px - entry_px) * lots * MULTIPLIER
+        pnl = (exit_px - entry_px) * lots * self._multiplier
         pct = ((exit_px / entry_px) - 1) * 100 if entry_px > 0 else 0
         self._trades.append({
             "time": time.strftime("%m-%d %H:%M"),
