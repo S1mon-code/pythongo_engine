@@ -616,6 +616,18 @@ class PortfolioIronLong(BaseStrategy):
         super().on_tick(tick)
         self.kline_gen.tick_to_kline(tick)
 
+        # 交易日切换（21:00 day start）— 重置daily_start_equity
+        from modules.trading_day import get_trading_day
+        td = get_trading_day()
+        if not hasattr(self, '_current_td'):
+            self._current_td = td
+        if td != self._current_td and self._current_td:
+            account = self.get_account_fund_data("")
+            if account:
+                self.state_map.daily_start_equity = account.balance
+            self._current_td = td
+            self.output(f"[新交易日] {td} (21:00 day start)")
+
     def on_stop(self):
         super().on_stop()
         self.output("策略停止")

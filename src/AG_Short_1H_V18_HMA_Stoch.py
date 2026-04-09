@@ -303,7 +303,7 @@ def check_portfolio_stops(equity, peak_equity, daily_start_equity):
     if dd <= STOP_WARNING:
         return ("warning", dd)
     if daily_pnl <= STOP_DAILY:
-        return ("daily_stop", daily_pnl)
+        return ("daily_stop", daily_pnl)  # daily PnL from 21:00 day start (21:00起算)
     return ("ok", dd)
 
 
@@ -314,15 +314,22 @@ def check_portfolio_stops(equity, peak_equity, daily_start_equity):
 STRATEGY_NAME = "AG_Short_1H_V18_HMA_Stoch"
 
 
+# 交易日从21:00开始（夜盘开盘）
+DAY_START_HOUR = 21
+
 def get_trading_day():
-    """当前时间+4小时推算交易日 (夜盘自动归下一天)."""
-    shifted = datetime.now() + timedelta(hours=4)
-    wd = shifted.weekday()
+    """根据当前时间推算交易日. 21:00起算为下一交易日."""
+    now = datetime.now()
+    if now.hour >= DAY_START_HOUR:
+        td = now + timedelta(days=1)
+    else:
+        td = now
+    wd = td.weekday()
     if wd == 5:
-        shifted += timedelta(days=2)
+        td += timedelta(days=2)
     elif wd == 6:
-        shifted += timedelta(days=1)
-    return shifted.strftime("%Y%m%d")
+        td += timedelta(days=1)
+    return td.strftime("%Y%m%d")
 
 
 def save_state(state_dict):

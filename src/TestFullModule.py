@@ -24,8 +24,8 @@ from modules.contract_info import get_multiplier, get_tick_size
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
-from modules.trading_day import get_trading_day
-from modules.risk import check_stops
+from modules.trading_day import get_trading_day, is_new_day, DAY_START_HOUR
+from modules.risk import check_stops, RiskManager
 from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
 from modules.order_monitor import OrderMonitor
@@ -130,8 +130,7 @@ class TestFullModule(BaseStrategy):
 
         # 权益追踪
         self._investor_id = ""
-        self._peak_equity = 0.0
-        self._daily_start_eq = 0.0
+        self._risk = None  # RiskManager，在on_start初始化
         self._current_td = ""
         self._daily_review_sent = False
         self._rollover_checked = False
@@ -188,24 +187,26 @@ class TestFullModule(BaseStrategy):
         if inv:
             self._investor_id = inv.investor_id
 
+        # 风控管理器（21:00 day start）
+        self._risk = RiskManager(capital=p.capital)
+
         # 恢复状态
         saved = load_state("TestFullModule")
         if saved:
-            self._peak_equity = saved.get("peak_equity", 0.0)
-            self._daily_start_eq = saved.get("daily_start_eq", 0.0)
+            self._risk.load_state(saved)
             self.peak_price = saved.get("peak_price", 0.0)
             self.avg_price = saved.get("avg_price", 0.0)
             self._current_td = saved.get("trading_day", "")
             self._today_trades = saved.get("today_trades", [])
-            self.output(f"[恢复] peak_eq={self._peak_equity:.0f} avg={self.avg_price:.1f}")
+            self.output(f"[恢复] peak_eq={self._risk.peak_equity:.0f} avg={self.avg_price:.1f}")
 
         # 权益初始化
         acct = self._get_account()
         if acct:
-            if self._peak_equity == 0:
-                self._peak_equity = acct.balance
-            if self._daily_start_eq == 0:
-                self._daily_start_eq = acct.balance
+            if self._risk.peak_equity == p.capital:
+                self._risk.update(acct.balance)
+            if self._risk.daily_start_eq == p.capital:
+                self._risk.on_day_change(acct.balance)
 
         # 信任broker持仓
         pos = self.get_position(p.instrument_id)
@@ -248,19 +249,20 @@ class TestFullModule(BaseStrategy):
         self.kline_generator.tick_to_kline(tick)
         p = self.params_map
 
-        # 交易日切换
+        # 交易日切换（21:00 day start）
         td = get_trading_day()
         if td != self._current_td and self._current_td:
             acct = self._get_account()
             if acct:
-                self._daily_start_eq = acct.balance
+                self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
+            self._perf.on_day_change()  # 重置每日PnL
             self._today_trades = []
             self._current_td = td
             self.state_map.trading_day = td
             self._daily_review_sent = False
             self._rollover_checked = False
             self._save()
-            self.output(f"[新交易日] {td}")
+            self.output(f"[新交易日] {td} (21:00 day start)")
         if not self._current_td:
             self._current_td = td
             self.state_map.trading_day = td
@@ -357,19 +359,16 @@ class TestFullModule(BaseStrategy):
             round(self.peak_price * (1 - p.trailing_pct / 100), 1) if net_pos > 0 else 0.0
         )
 
-        # 权益
+        # 权益（RiskManager自动追踪peak和daily）
         acct = self._get_account()
         equity = pos_profit = 0.0
         if acct:
             equity = acct.balance
             pos_profit = acct.position_profit
-            if equity > self._peak_equity:
-                self._peak_equity = equity
+            self._risk.update(equity)
             self.state_map.equity = round(equity, 0)
-            dd = (equity - self._peak_equity) / self._peak_equity if self._peak_equity > 0 else 0
-            dp = (equity - self._daily_start_eq) / self._daily_start_eq if self._daily_start_eq > 0 else 0
-            self.state_map.drawdown = f"{dd:.2%}"
-            self.state_map.daily_pnl = f"{dp:+.2%}"
+            self.state_map.drawdown = f"{self._risk.drawdown_pct:.2%}"
+            self.state_map.daily_pnl = f"{self._risk.daily_pnl_pct:+.2%}"
 
         # ── 盘前清仓 (优先级最高, 立即执行不等next-bar) ──
         if self._guard.should_flatten() and net_pos > 0:
@@ -385,12 +384,11 @@ class TestFullModule(BaseStrategy):
             self.update_status_bar()
             return
 
-        # ── 止损检查 ──
-        action, reason = check_stops(
+        # ── 止损检查（RiskManager管理daily_start_eq，21:00重置）──
+        action, reason = self._risk.check(
             close=close, avg_price=self.avg_price, peak_price=self.peak_price,
-            equity=equity, peak_equity=self._peak_equity,
-            daily_start_eq=self._daily_start_eq, pos_profit=pos_profit,
-            net_pos=net_pos, hard_stop_pct=p.hard_stop_pct,
+            pos_profit=pos_profit, net_pos=net_pos,
+            hard_stop_pct=p.hard_stop_pct,
             trailing_pct=p.trailing_pct, equity_stop_pct=p.equity_stop_pct,
         )
         if action and action != "WARNING":
@@ -574,14 +572,14 @@ class TestFullModule(BaseStrategy):
         })
 
     def _save(self):
-        save_state({
-            "peak_equity": self._peak_equity,
-            "daily_start_eq": self._daily_start_eq,
+        state = {
             "peak_price": self.peak_price,
             "avg_price": self.avg_price,
             "trading_day": self._current_td,
             "today_trades": self._today_trades[-50:],
-        }, name="TestFullModule")
+        }
+        state.update(self._risk.get_state())  # peak_equity, daily_start_eq
+        save_state(state, name="TestFullModule")
 
     def _send_review(self):
         p = self.params_map
@@ -589,7 +587,9 @@ class TestFullModule(BaseStrategy):
         net = pos.net_position if pos else 0
         acct = self._get_account()
         eq = acct.balance if acct else 0
-        dd = (eq - self._peak_equity) / self._peak_equity * 100 if self._peak_equity > 0 else 0
+        dd_pct = self._risk.drawdown_pct * 100
+        daily_pct = self._risk.daily_pnl_pct * 100
+        daily_abs = eq - self._risk.daily_start_eq
         if self._today_trades:
             tbl = "| 时间 | 操作 | 手数 | 价格 | 持仓 |\n|--|--|--|--|--|\n"
             for t in self._today_trades[-10:]:
@@ -599,7 +599,10 @@ class TestFullModule(BaseStrategy):
         else:
             tbl = "无交易"
         feishu("daily_review", p.instrument_id,
-               f"**每日回顾**\n权益: {eq:,.0f} 回撤: {dd:.2f}%\n"
+               f"**每日回顾** (21:00起算)\n"
+               f"权益: {eq:,.0f} | 回撤: {dd_pct:.2f}%\n"
+               f"当日PnL: {daily_abs:+,.0f} ({daily_pct:+.2f}%)\n"
+               f"当日交易: {self._perf.daily_trade_count}笔 PnL{self._perf.daily_pnl:+,.0f}\n"
                f"持仓: {net}手\n\n{tbl}\n\n"
                f"{self._slip.format_report()}\n{self._perf.format_report(p.instrument_id)}")
 
