@@ -143,7 +143,57 @@ class DailyReporter(BaseStrategy):
             return None
         return self.get_account_fund_data(self._investor_id)
 
+    def _timer_loop(self):
+        """独立定时线程，不依赖tick，每30秒检查一次时间."""
+        import threading
+        while self._timer_running:
+            try:
+                now = datetime.now()
+
+                # 交易日切换
+                td = get_trading_day()
+                if td != self._current_td and self._current_td:
+                    acct = self._get_account()
+                    if acct:
+                        self._daily_start_eq = acct.balance
+                    self._current_td = td
+                    self.state_map.trading_day = td
+                    self._review_sent = False
+                    self._morning_sent = False
+                if not self._current_td:
+                    self._current_td = td
+                    self.state_map.trading_day = td
+
+                # 更新State面板
+                acct = self._get_account()
+                if acct:
+                    self.state_map.equity = round(acct.balance, 0)
+                    self.state_map.available = round(acct.available, 0)
+                    self.state_map.pos_profit = round(acct.position_profit, 0)
+
+                # 日终汇总
+                if (not self._review_sent
+                        and now.hour == REVIEW_HOUR
+                        and REVIEW_MINUTE <= now.minute < REVIEW_MINUTE + 5):
+                    self._send_daily_summary()
+                    self._review_sent = True
+                    self.output(f"[定时] 日终汇总已推送")
+
+                # 开盘状态
+                if (not self._morning_sent
+                        and now.hour == MORNING_HOUR
+                        and MORNING_MINUTE <= now.minute < MORNING_MINUTE + 5):
+                    self._send_morning_report()
+                    self._morning_sent = True
+                    self.output(f"[定时] 开盘状态已推送")
+
+            except Exception as e:
+                self.output(f"[定时异常] {type(e).__name__}: {e}")
+
+            time.sleep(30)  # 每30秒检查一次
+
     def on_start(self):
+        import threading
         p = self.params_map
 
         self.kline_generator = KLineGenerator(
@@ -166,61 +216,26 @@ class DailyReporter(BaseStrategy):
         self._current_td = get_trading_day()
         self.state_map.trading_day = self._current_td
 
+        # 启动定时线程（不依赖tick）
+        self._timer_running = True
+        self._timer_thread = threading.Thread(target=self._timer_loop, daemon=True)
+        self._timer_thread.start()
+
         super().on_start()
-        self.output(f"DailyReporter 启动 | 监控 {len(WATCH_INSTRUMENTS)} 个合约")
-        feishu("start", "MONITOR",
-               f"**全账户监控启动**\n"
-               f"监控合约: {', '.join(c[0] for c in WATCH_INSTRUMENTS)}\n"
-               f"权益: {acct.balance:,.0f}" if acct else "**监控启动** 未获取账户")
+        self.output(f"DailyReporter 启动 | 监控 {len(WATCH_INSTRUMENTS)} 个合约 | 定时线程已启动")
+        start_msg = (f"**全账户监控启动**\n"
+                     f"监控品种: {len(WATCH_INSTRUMENTS)}个\n"
+                     f"权益: {acct.balance:,.0f}" if acct else "**监控启动** 未获取账户")
+        feishu("start", "MONITOR", start_msg)
 
     def on_stop(self):
+        self._timer_running = False
         super().on_stop()
 
     def on_tick(self, tick: TickData):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
-
-        # 交易日切换
-        td = get_trading_day()
-        if td != self._current_td and self._current_td:
-            acct = self._get_account()
-            if acct:
-                self._daily_start_eq = acct.balance
-            self._current_td = td
-            self.state_map.trading_day = td
-            self._review_sent = False
-            self._morning_sent = False
-        if not self._current_td:
-            self._current_td = td
-            self.state_map.trading_day = td
-
-        # 更新State面板
-        acct = self._get_account()
-        if acct:
-            self.state_map.equity = round(acct.balance, 0)
-            self.state_map.available = round(acct.available, 0)
-            self.state_map.pos_profit = round(acct.position_profit, 0)
-
-        # 更新持仓汇总
-        positions = self._scan_positions()
-        total = sum(abs(p['lots']) for p in positions if p['lots'] != 0)
-        self.state_map.total_pos = f"{total}手/{len([p for p in positions if p['lots'] != 0])}品种"
-
-        now = datetime.now()
-
-        # 15:15 日终汇总
-        if (not self._review_sent
-                and now.hour == REVIEW_HOUR
-                and REVIEW_MINUTE <= now.minute < REVIEW_MINUTE + 5):
-            self._send_daily_summary()
-            self._review_sent = True
-
-        # 21:05 开盘状态
-        if (not self._morning_sent
-                and now.hour == MORNING_HOUR
-                and MORNING_MINUTE <= now.minute < MORNING_MINUTE + 5):
-            self._send_morning_report()
-            self._morning_sent = True
+        # tick只用于feed K线，定时检查已移到独立线程
 
     def callback(self, kline: KLineData):
         pass  # 不处理K线
