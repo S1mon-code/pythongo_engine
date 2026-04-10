@@ -24,14 +24,80 @@ from modules.feishu import feishu
 from modules.trading_day import get_trading_day
 
 
-# 监控的所有合约列表 (根据你实际在跑的策略调整)
+# 全品种监控列表 — 只报告有持仓的
 WATCH_INSTRUMENTS = [
-    # (合约代码, 品种名, 方向, 乘数)
-    ("i2609", "铁矿石", "多/空", 100),
-    ("cu2605", "铜", "空", 5),
-    ("al2605", "电解铝", "多", 5),
-    ("IH2606", "上证50", "多", 300),
-    ("lc2609", "碳酸锂", "空", 1),
+    # ── 中金所 (CFFEX) ──
+    ("IF2606", "沪深300", 300),
+    ("IH2606", "上证50", 300),
+    ("IC2606", "中证500", 200),
+    ("IM2606", "中证1000", 200),
+    ("TS2609", "2年国债", 20000),
+    ("TF2609", "5年国债", 10000),
+    ("T2609", "10年国债", 10000),
+    ("TL2609", "30年国债", 10000),
+    # ── 能源中心 (INE) ──
+    ("sc2606", "原油", 1000),
+    ("nr2607", "20号胶", 10),
+    ("lu2607", "低硫燃油", 10),
+    ("bc2606", "国际铜", 5),
+    ("ec2608", "集运指数", 50),
+    # ── 上期所 (SHFE) ──
+    ("rb2610", "螺纹钢", 10),
+    ("hc2610", "热卷", 10),
+    ("cu2605", "铜", 5),
+    ("al2605", "电解铝", 5),
+    ("zn2607", "锌", 5),
+    ("pb2607", "铅", 5),
+    ("ni2607", "镍", 1),
+    ("sn2607", "锡", 1),
+    ("ss2607", "不锈钢", 5),
+    ("ao2607", "氧化铝", 20),
+    ("au2608", "黄金", 1000),
+    ("ag2608", "白银", 15),
+    ("ru2609", "天然橡胶", 10),
+    ("bu2609", "沥青", 10),
+    ("sp2609", "纸浆", 10),
+    ("fu2609", "燃料油", 10),
+    ("br2607", "丁二烯橡胶", 5),
+    # ── 大商所 (DCE) ──
+    ("i2609", "铁矿石", 100),
+    ("j2609", "焦炭", 100),
+    ("jm2609", "焦煤", 60),
+    ("a2609", "豆一", 10),
+    ("m2609", "豆粕", 10),
+    ("y2609", "豆油", 10),
+    ("p2609", "棕榈油", 10),
+    ("c2609", "玉米", 10),
+    ("cs2609", "玉米淀粉", 10),
+    ("l2609", "聚乙烯", 5),
+    ("v2609", "PVC", 5),
+    ("pp2609", "聚丙烯", 5),
+    ("eg2609", "乙二醇", 10),
+    ("eb2609", "苯乙烯", 5),
+    ("pg2609", "LPG", 20),
+    ("jd2609", "鸡蛋", 5),
+    ("lh2609", "生猪", 16),
+    # ── 郑商所 (CZCE) ──
+    ("CF609", "棉花", 5),
+    ("SR609", "白糖", 10),
+    ("TA609", "PTA", 5),
+    ("MA609", "甲醇", 10),
+    ("FG609", "玻璃", 20),
+    ("SA609", "纯碱", 20),
+    ("RM609", "菜粕", 10),
+    ("OI609", "菜油", 10),
+    ("UR609", "尿素", 20),
+    ("PF609", "短纤", 5),
+    ("PK609", "花生", 5),
+    ("AP610", "苹果", 10),
+    ("SM609", "锰硅", 5),
+    ("SF609", "硅铁", 5),
+    ("PX609", "对二甲苯", 5),
+    ("SH609", "烧碱", 30),
+    # ── 广期所 (GFEX) ──
+    ("si2609", "工业硅", 5),
+    ("lc2609", "碳酸锂", 1),
+    ("ps2609", "多晶硅", 3),
 ]
 
 # 推送时间
@@ -163,15 +229,16 @@ class DailyReporter(BaseStrategy):
         pass  # 不推图表
 
     def _scan_positions(self):
-        """扫描所有关注合约的持仓."""
+        """扫描全品种持仓，只返回有持仓的."""
         positions = []
-        for inst_id, name, direction, mult in WATCH_INSTRUMENTS:
+        for inst_id, name, mult in WATCH_INSTRUMENTS:
             pos = self.get_position(inst_id)
             lots = pos.net_position if pos else 0
+            if lots == 0:
+                continue  # 跳过空仓
             avg = pos.open_avg_price if pos and hasattr(pos, 'open_avg_price') else 0
             last = pos.last_price if pos and hasattr(pos, 'last_price') and pos.last_price > 0 else 0
-            # 持仓盈亏: 多=(现价-均价)*手数*乘数, 空=(均价-现价)*手数*乘数
-            if lots != 0 and avg > 0 and last > 0:
+            if avg > 0 and last > 0:
                 if lots > 0:
                     pnl = (last - avg) * lots * mult
                 else:
@@ -181,7 +248,6 @@ class DailyReporter(BaseStrategy):
             positions.append({
                 "instrument": inst_id,
                 "name": name,
-                "direction": direction,
                 "multiplier": mult,
                 "lots": lots,
                 "avg_price": avg,
@@ -204,9 +270,7 @@ class DailyReporter(BaseStrategy):
         daily_pct = daily_abs / self._daily_start_eq * 100 if self._daily_start_eq > 0 else 0
 
         positions = self._scan_positions()
-        active = [p for p in positions if p['lots'] != 0]
-        idle = [p for p in positions if p['lots'] == 0]
-        total_pnl = sum(p['pnl'] for p in active) if active else 0
+        total_pnl = sum(p['pnl'] for p in positions) if positions else 0
 
         # 构建卡片elements
         elements = [
@@ -220,15 +284,13 @@ class DailyReporter(BaseStrategy):
             {"tag": "hr"},
         ]
 
-        if active:
+        if positions:
             elements.append({"tag": "div", "text": {"tag": "lark_md",
-                "content": f"**📋 持仓明细 ({len(active)}个品种, 合计盈亏: {total_pnl:+,.0f})**"}})
-            # 表头
+                "content": f"**📋 持仓明细 ({len(positions)}个品种, 合计盈亏: {total_pnl:+,.0f})**"}})
             elements.append(self._table_row(
                 ["**合约**", "**方向**", "**手数**", "**均价**", "**现价**", "**盈亏**"],
                 bg="grey"))
-            # 数据行
-            for p in active:
+            for p in positions:
                 lots = p['lots']
                 side = "空" if lots < 0 else "多"
                 pnl_str = f"**{p['pnl']:+,.0f}**"
@@ -238,12 +300,11 @@ class DailyReporter(BaseStrategy):
                 ]))
         else:
             elements.append({"tag": "div", "text": {"tag": "lark_md",
-                "content": "**📋 持仓明细**\n无持仓"}})
+                "content": "**📋 持仓明细**\n全部空仓"}})
 
         elements.append({"tag": "hr"})
-        idle_text = ", ".join(f"{p['name']}({p['instrument']})" for p in idle) if idle else "无"
         elements.append({"tag": "div", "text": {"tag": "lark_md",
-            "content": f"⚪ 空仓: {idle_text}\n\n*{time.strftime('%Y-%m-%d %H:%M:%S')}*"}})
+            "content": f"监控品种: {len(WATCH_INSTRUMENTS)}个\n\n*{time.strftime('%Y-%m-%d %H:%M:%S')}*"}})
 
         # 直接发送卡片
         try:
@@ -284,8 +345,7 @@ class DailyReporter(BaseStrategy):
         if not acct:
             return
 
-        positions = self._scan_positions()
-        active = [p for p in positions if p['lots'] != 0]
+        positions = self._scan_positions()  # 只返回有持仓的
 
         msg = (
             f"**新交易日开盘**\n"
@@ -295,17 +355,17 @@ class DailyReporter(BaseStrategy):
             f"可用资金: {acct.available:,.0f}\n"
         )
 
-        if active:
-            msg += f"\n**📋 隔夜持仓 ({len(active)}个品种)**\n"
+        if positions:
+            msg += f"\n**📋 隔夜持仓 ({len(positions)}个品种)**\n"
             msg += "| 合约 | 品种 | 方向 | 手数 |\n|--|--|--|--|\n"
-            for p in active:
+            for p in positions:
                 lots = p['lots']
                 side = "空" if lots < 0 else "多"
                 msg += f"| {p['instrument']} | {p['name']} | {side} | {abs(lots)} |\n"
         else:
             msg += "\n**📋 隔夜持仓**\n全部空仓\n"
 
-        msg += f"\n**监控合约**: {', '.join(c[0] for c in WATCH_INSTRUMENTS)}"
+        msg += f"\n**监控品种**: {len(WATCH_INSTRUMENTS)}个"
 
         self.output(f"[开盘] 已推送开盘状态")
         self.state_map.last_report = time.strftime("%H:%M")
