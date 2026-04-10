@@ -108,7 +108,7 @@ MORNING_MINUTE = 5
 
 
 class Params(BaseParams):
-    exchange: str = Field(default="DCE", title="交易所代码")
+    exchange: str = Field(default="SHFE", title="交易所代码")
     instrument_id: str = Field(default="cu2605", title="挂载合约(仅用于tick)")
     kline_style: str = Field(default="M1", title="K线周期")
     sim_24h: bool = Field(default=True, title="24H模拟盘模式")
