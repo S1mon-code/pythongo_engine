@@ -1,11 +1,16 @@
 """
 ================================================================================
-  TestFullModule — M1 双均线 + 全模块集成测试
+  I_Long_Portfolio_V7_V20 — V7+V20合并信号 (铁矿4H做多)
 ================================================================================
 
-  目的: 验证全部12个模块在PythonGO实盘环境中协同工作
-  信号: MA(3) vs MA(7) 金叉做多, 死叉平仓, 展幅>0.1%加仓
-  部署: modules/ 放在 pyStrategy/modules/, 本文件放 self_strategy/
+  Portfolio策略: 合并两个LONG信号
+  - V7: EMA(60) + RSI(14) filter → [0, 1] bell-curve
+  - V20: Donchian(20) + EMA(30) + ATR vol regime → [0, 1]
+  信号: combined = (signal_v7 + signal_v20) / 2
+  forecast = abs(combined) * FORECAST_SCALAR
+  止损: Chandelier Exit + RiskManager(移动/硬/权益止损)
+  仓位: Vol Targeting + Carver 10% buffer
+  部署: modules/ → pyStrategy/modules/, 本文件 → self_strategy/
 
 ================================================================================
 """
@@ -19,7 +24,7 @@ from pythongo.classdef import KLineData, OrderData, TickData, TradeData
 from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
-# ── 模块导入 ──
+# ── 模块导入 (和TestFullModule完全一致) ──
 from modules.contract_info import get_multiplier, get_tick_size
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
@@ -38,19 +43,83 @@ from modules.position_sizing import calc_optimal_lots, apply_buffer
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
-VOL_ATR_PERIOD = 14
-ANNUAL_FACTOR = 252 * 240       # M1 bars/year
+STRATEGY_NAME = "I_Long_Portfolio_V7_V20"
+
+# ── V7 参数 (EMA Trend + RSI Filter) ──
+V7_EMA_PERIOD = 60
+V7_RSI_PERIOD = 14
+V7_RSI_FLOOR = 40.0
+V7_RSI_CEILING = 70.0
+V7_WARMUP = 100
+
+# ── V20 参数 (Donchian + EMA + ATR Vol Regime) ──
+V20_DC_PERIOD = 40
+V20_EMA_PERIOD = 80
+V20_ATR_PERIOD = 14
+V20_ATR_MULT_CEILING = 2.5
+V20_WARMUP = 100
+
+# 共享预热（取两者最大值）
+WARMUP = max(V7_WARMUP, V20_WARMUP)
+
+# Chandelier Exit (Long)
+CHANDELIER_PERIOD = 22
+CHANDELIER_MULT = 2.5
+
+# Vol Targeting
+FORECAST_SCALAR = 10.0
+FORECAST_CAP = 20.0
+ANNUAL_FACTOR = 252 * 3            # H4: 铁矿 ~3 bars/day
+
+# 日报时间
 DAILY_REVIEW_HOUR = 15
 DAILY_REVIEW_MINUTE = 15
-ADD_SPREAD_THRESHOLD = 0.001    # 展幅>0.1%才加仓
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  INDICATOR
+#  INDICATORS (inline, 纯numpy, 从QBase移植)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def atr(highs, lows, closes, period=14):
-    """ATR with Wilder RMA smoothing."""
+def _ema(arr, period):
+    """EMA with SMA seed."""
+    n = len(arr)
+    out = np.full(n, np.nan)
+    if n < period:
+        return out
+    out[period - 1] = np.mean(arr[:period])
+    k = 2.0 / (period + 1)
+    for i in range(period, n):
+        out[i] = arr[i] * k + out[i - 1] * (1 - k)
+    return out
+
+
+def _rsi(closes, period=14):
+    """RSI — Wilder smoothing."""
+    n = len(closes)
+    out = np.full(n, np.nan)
+    if n < period + 1:
+        return out
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+    if avg_loss == 0:
+        out[period] = 100.0
+    else:
+        out[period] = 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    for i in range(period, n - 1):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            out[i + 1] = 100.0
+        else:
+            out[i + 1] = 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    return out
+
+
+def _atr(highs, lows, closes, period=14):
+    """ATR — Wilder RMA."""
     n = len(closes)
     if n == 0 or n < period + 1:
         return np.full(n, np.nan)
@@ -68,6 +137,124 @@ def atr(highs, lows, closes, period=14):
     return out
 
 
+def _donchian(highs, lows, period=20):
+    """Donchian Channel — returns (upper, lower, mid)."""
+    n = len(highs)
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    mid = np.full(n, np.nan)
+    for i in range(period - 1, n):
+        upper[i] = np.max(highs[i - period + 1:i + 1])
+        lower[i] = np.min(lows[i - period + 1:i + 1])
+        mid[i] = (upper[i] + lower[i]) / 2.0
+    return upper, lower, mid
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  V7 SIGNAL — EMA trend + RSI bell-curve filter
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_signal_v7(closes, bar_idx):
+    """EMA趋势 + RSI甜蜜区钟形信号 → [0, 1]. Long only."""
+    if bar_idx < V7_WARMUP:
+        return 0.0
+
+    ema_arr = _ema(closes, V7_EMA_PERIOD)
+    rsi_arr = _rsi(closes, V7_RSI_PERIOD)
+
+    close = closes[bar_idx]
+    e = ema_arr[bar_idx]
+    r = rsi_arr[bar_idx]
+
+    if np.isnan(e) or np.isnan(r):
+        return 0.0
+
+    # Gate: price must be above EMA
+    if close <= e:
+        return 0.0
+
+    # Gate: RSI must be in sweet spot
+    if r < V7_RSI_FLOOR or r > V7_RSI_CEILING:
+        return 0.0
+
+    # Bell-curve weighting within RSI range
+    mid = (V7_RSI_FLOOR + V7_RSI_CEILING) / 2.0
+    if r <= mid:
+        return float((r - V7_RSI_FLOOR) / (mid - V7_RSI_FLOOR))
+    return float((V7_RSI_CEILING - r) / (V7_RSI_CEILING - mid))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  V20 SIGNAL — Donchian breakout + EMA filter + ATR vol regime
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_signal_v20(closes, highs, lows, bar_idx):
+    """三重门控 + 波动率regime衰减 → [0, 1]. Long only."""
+    if bar_idx < V20_WARMUP:
+        return 0.0
+
+    dc_upper, dc_lower, dc_mid = _donchian(highs, lows, V20_DC_PERIOD)
+    ema_arr = _ema(closes, V20_EMA_PERIOD)
+    atr_arr = _atr(highs, lows, closes, V20_ATR_PERIOD)
+
+    # ATR median (60-bar lookback)
+    atr_med = np.nan
+    if bar_idx >= 60:
+        window = atr_arr[bar_idx - 60:bar_idx]
+        valid = window[~np.isnan(window)]
+        if len(valid) > 0:
+            atr_med = np.median(valid)
+
+    close = closes[bar_idx]
+    upper = dc_upper[bar_idx]
+    mid = dc_mid[bar_idx]
+    e = ema_arr[bar_idx]
+    a = atr_arr[bar_idx]
+
+    if any(np.isnan(x) for x in (upper, mid, e, a, atr_med)):
+        return 0.0
+    if atr_med <= 0:
+        return 0.0
+
+    # Gate 1: price above EMA
+    if close <= e:
+        return 0.0
+
+    # Gate 2: price above Donchian mid
+    if close <= mid:
+        return 0.0
+
+    # Gate 3: ATR not extreme
+    if a > atr_med * V20_ATR_MULT_CEILING:
+        return 0.0
+
+    # Position within upper channel
+    width = upper - mid
+    if width <= 0:
+        return 0.0
+    pos = (close - mid) / width
+
+    # Vol regime attenuation
+    vol_factor = 1.0 - min((a / atr_med - 1.0) / (V20_ATR_MULT_CEILING - 1.0), 0.5)
+
+    return float(np.clip(pos * vol_factor, 0.0, 1.0))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CHANDELIER EXIT (LONG)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def chandelier_long(highs, closes, atr_arr, bar_idx):
+    """Long Chandelier: close < highest_high(period) - mult x ATR."""
+    if bar_idx < CHANDELIER_PERIOD:
+        return False
+    a = atr_arr[bar_idx]
+    if np.isnan(a):
+        return False
+    hh = np.max(highs[bar_idx - CHANDELIER_PERIOD + 1:bar_idx + 1])
+    return bool(closes[bar_idx] < hh - CHANDELIER_MULT * a)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PARAMS / STATE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -75,25 +262,25 @@ def atr(highs, lows, closes, period=14):
 class Params(BaseParams):
     exchange: str = Field(default="DCE", title="交易所代码")
     instrument_id: str = Field(default="i2509", title="合约代码")
-    kline_style: str = Field(default="M1", title="K线周期")
-    fast_period: int = Field(default=3, title="快线周期")
-    slow_period: int = Field(default=7, title="慢线周期")
-    unit_volume: int = Field(default=1, title="每次手数")
-    max_lots: int = Field(default=3, title="最大持仓")
-    capital: float = Field(default=1_000_000, title="配置资金")
+    kline_style: str = Field(default="H4", title="K线周期")
+    max_lots: int = Field(default=10, title="最大持仓")
+    capital: float = Field(default=5_000_000, title="配置资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
     trailing_pct: float = Field(default=0.3, title="移动止损(%)")
     equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
     flatten_minutes: int = Field(default=5, title="盘前清仓(分钟)")
-    sim_24h: bool = Field(default=True, title="24H模拟盘模式")
+    sim_24h: bool = Field(default=False, title="24H模拟盘模式")
 
 
 class State(BaseState):
-    fast_ma: float = Field(default=0.0, title="快均线")
-    slow_ma: float = Field(default=0.0, title="慢均线")
+    signal_v7: float = Field(default=0.0, title="V7信号")
+    signal_v20: float = Field(default=0.0, title="V20信号")
+    combined: float = Field(default=0.0, title="合并信号")
+    forecast: float = Field(default=0.0, title="预测")
+    target_lots: int = Field(default=0, title="目标手")
     net_pos: int = Field(default=0, title="净持仓")
     avg_price: float = Field(default=0.0, title="均价")
-    peak_price: float = Field(default=0.0, title="最高价")
+    peak_price: float = Field(default=0.0, title="峰价")
     hard_line: float = Field(default=0.0, title="止损线")
     trail_line: float = Field(default=0.0, title="移损线")
     equity: float = Field(default=0.0, title="权益")
@@ -111,8 +298,8 @@ class State(BaseState):
 #  STRATEGY
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestFullModule(BaseStrategy):
-    """M1 双均线 + 全模块集成测试"""
+class I_Long_Portfolio_V7_V20(BaseStrategy):
+    """铁矿4H做多 — V7(EMA+RSI) + V20(Donchian+EMA+ATR) 合并Portfolio"""
 
     def __init__(self):
         super().__init__()
@@ -125,18 +312,18 @@ class TestFullModule(BaseStrategy):
         self.peak_price = 0.0
         self._pending = None
         self._pending_target = None
-        self._pending_reason = ""      # 触发逻辑描述
+        self._pending_reason = ""
         self.order_id = set()
 
         # 权益追踪
         self._investor_id = ""
-        self._risk = None  # RiskManager，在on_start初始化
+        self._risk = None
         self._current_td = ""
         self._daily_review_sent = False
         self._rollover_checked = False
         self._today_trades = []
 
-        # 模块实例 (需要instrument_id的在on_start中初始化)
+        # 模块实例
         self._guard = None
         self._slip = None
         self._hb = None
@@ -147,8 +334,9 @@ class TestFullModule(BaseStrategy):
     @property
     def main_indicator_data(self):
         return {
-            f"MA{self.params_map.fast_period}": self.state_map.fast_ma,
-            f"MA{self.params_map.slow_period}": self.state_map.slow_ma,
+            "V7": self.state_map.signal_v7,
+            "V20": self.state_map.signal_v20,
+            "forecast": self.state_map.forecast,
         }
 
     def _get_account(self):
@@ -162,17 +350,13 @@ class TestFullModule(BaseStrategy):
 
     def on_start(self):
         p = self.params_map
-
-        # 合约参数 (从contract_info获取, 不再硬编码)
         self._multiplier = get_multiplier(p.instrument_id)
 
-        # 初始化需要instrument_id的模块
         self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)
 
-        # K线
         self.kline_generator = KLineGenerator(
             callback=self.callback,
             real_time_callback=self.real_time_callback,
@@ -182,16 +366,13 @@ class TestFullModule(BaseStrategy):
         )
         self.kline_generator.push_history_data()
 
-        # 账户ID
         inv = self.get_investor_data(1)
         if inv:
             self._investor_id = inv.investor_id
 
-        # 风控管理器（21:00 day start）
         self._risk = RiskManager(capital=p.capital)
 
-        # 恢复状态
-        saved = load_state("TestFullModule")
+        saved = load_state(STRATEGY_NAME)
         if saved:
             self._risk.load_state(saved)
             self.peak_price = saved.get("peak_price", 0.0)
@@ -200,7 +381,6 @@ class TestFullModule(BaseStrategy):
             self._today_trades = saved.get("today_trades", [])
             self.output(f"[恢复] peak_eq={self._risk.peak_equity:.0f} avg={self.avg_price:.1f}")
 
-        # 权益初始化
         acct = self._get_account()
         if acct:
             if self._risk.peak_equity == p.capital:
@@ -208,7 +388,6 @@ class TestFullModule(BaseStrategy):
             if self._risk.daily_start_eq == p.capital:
                 self._risk.on_day_change(acct.balance)
 
-        # 信任broker持仓
         pos = self.get_position(p.instrument_id)
         actual = pos.net_position if pos else 0
         self.state_map.net_pos = actual
@@ -220,7 +399,6 @@ class TestFullModule(BaseStrategy):
             self._current_td = get_trading_day()
         self.state_map.trading_day = self._current_td
 
-        # 换月检查
         level, days = check_rollover(p.instrument_id)
         if level:
             feishu("rollover", p.instrument_id, f"**换月提醒**: 距交割月**{days}天**")
@@ -231,12 +409,13 @@ class TestFullModule(BaseStrategy):
             f"乘数={self._multiplier} | 持仓={actual}"
         )
         feishu("start", p.instrument_id,
-               f"**策略启动**\n合约: {p.instrument_id}\n乘数: {self._multiplier}\n持仓: {actual}手")
+               f"**策略启动** {STRATEGY_NAME}\n合约: {p.instrument_id}\n"
+               f"乘数: {self._multiplier}\n持仓: {actual}手")
 
     def on_stop(self):
         self._save()
         feishu("shutdown", self.params_map.instrument_id,
-               f"**策略停止**\n持仓: {self.state_map.net_pos}手\n"
+               f"**策略停止** {STRATEGY_NAME}\n持仓: {self.state_map.net_pos}手\n"
                f"{self._slip.format_report()}")
         super().on_stop()
 
@@ -249,13 +428,12 @@ class TestFullModule(BaseStrategy):
         self.kline_generator.tick_to_kline(tick)
         p = self.params_map
 
-        # 交易日切换（21:00 day start）
         td = get_trading_day()
         if td != self._current_td and self._current_td:
             acct = self._get_account()
             if acct:
-                self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
-            self._perf.on_day_change()  # 重置每日PnL
+                self._risk.on_day_change(acct.balance)
+            self._perf.on_day_change()
             self._today_trades = []
             self._current_td = td
             self.state_map.trading_day = td
@@ -267,22 +445,18 @@ class TestFullModule(BaseStrategy):
             self._current_td = td
             self.state_map.trading_day = td
 
-        # 换月 (每天一次)
         if not self._rollover_checked:
             level, days = check_rollover(p.instrument_id)
             if level:
                 feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
             self._rollover_checked = True
 
-        # 心跳
         for atype, msg in self._hb.check(p.instrument_id):
             if atype == "no_tick":
                 feishu("no_tick", p.instrument_id, msg)
 
-        # 交易时段状态
         self.state_map.session = self._guard.get_status()
 
-        # 每日回顾
         now = datetime.now()
         if (not self._daily_review_sent
                 and now.hour == DAILY_REVIEW_HOUR
@@ -300,6 +474,9 @@ class TestFullModule(BaseStrategy):
         except Exception as e:
             self.output(f"[callback异常] {type(e).__name__}: {e}")
 
+    def real_time_callback(self, kline: KLineData):
+        self._push_widget(kline)
+
     def _on_bar(self, kline: KLineData):
         signal_price = 0.0
         p = self.params_map
@@ -310,7 +487,7 @@ class TestFullModule(BaseStrategy):
         for oid in self._om.check_timeouts(self.cancel_order):
             self.output(f"[超时撤单] {oid}")
 
-        # 历史回放阶段: 只推K线到图表, 不交易不算信号
+        # 历史回放
         if not self.trading:
             self._pending = None
             self._pending_target = None
@@ -328,27 +505,75 @@ class TestFullModule(BaseStrategy):
             self.update_status_bar()
             return
 
-        # 数据检查
+        # 数据准备
         producer = self.kline_generator.producer
-        if len(producer.close) < p.slow_period + 2:
+        if len(producer.close) < WARMUP + 2:
             self._push_widget(kline, signal_price)
             return
 
-        # 指标 (不用producer.sma, 手动算避免ta_sma bad parameter)
         closes = np.array(producer.close, dtype=np.float64)
+        highs = np.array(producer.high, dtype=np.float64)
+        lows = np.array(producer.low, dtype=np.float64)
+        bar_idx = len(closes) - 1
         close = float(closes[-1])
-        fast_ma = float(np.mean(closes[-p.fast_period:]))
-        slow_ma = float(np.mean(closes[-p.slow_period:]))
-        self.state_map.fast_ma = round(fast_ma, 2)
-        self.state_map.slow_ma = round(slow_ma, 2)
 
-        # 持仓
-        net_pos = self.get_position(p.instrument_id).net_position
+        # ── 指标调试输出 ──
+        # V7 indicators
+        ema_v7 = _ema(closes, V7_EMA_PERIOD)
+        rsi_v7 = _rsi(closes, V7_RSI_PERIOD)
+        e7 = ema_v7[bar_idx] if not np.isnan(ema_v7[bar_idx]) else 0.0
+        r7 = rsi_v7[bar_idx] if not np.isnan(rsi_v7[bar_idx]) else 0.0
+        # V20 indicators
+        ema_v20 = _ema(closes, V20_EMA_PERIOD)
+        atr_v20 = _atr(highs, lows, closes, V20_ATR_PERIOD)
+        dc_upper, dc_lower, dc_mid = _donchian(highs, lows, V20_DC_PERIOD)
+        e20 = ema_v20[bar_idx] if not np.isnan(ema_v20[bar_idx]) else 0.0
+        a20 = atr_v20[bar_idx] if not np.isnan(atr_v20[bar_idx]) else 0.0
+        u20 = dc_upper[bar_idx] if not np.isnan(dc_upper[bar_idx]) else 0.0
+        m20 = dc_mid[bar_idx] if not np.isnan(dc_mid[bar_idx]) else 0.0
+        self.output(
+            f"[IND] V7: EMA{V7_EMA_PERIOD}={e7:.1f} RSI{V7_RSI_PERIOD}={r7:.1f} | "
+            f"V20: EMA{V20_EMA_PERIOD}={e20:.1f} ATR={a20:.2f} "
+            f"DC_upper={u20:.1f} DC_mid={m20:.1f} | close={close:.1f}"
+        )
+
+        # ── Portfolio 信号合并 ──
+        raw_v7 = generate_signal_v7(closes, bar_idx)
+        raw_v20 = generate_signal_v20(closes, highs, lows, bar_idx)
+        combined = (raw_v7 + raw_v20) / 2.0
+        forecast = min(FORECAST_CAP, max(0.0, abs(combined) * FORECAST_SCALAR))
+
+        self.state_map.signal_v7 = round(raw_v7, 3)
+        self.state_map.signal_v20 = round(raw_v20, 3)
+        self.state_map.combined = round(combined, 3)
+        self.state_map.forecast = round(forecast, 1)
+        self.output(
+            f"[IND] V7={raw_v7:.3f} V20={raw_v20:.3f} combined={combined:.3f} forecast={forecast:.1f} close={close:.1f}"
+        )
+        self.output(
+            f"[SIGNAL] V7={raw_v7:.4f} V20={raw_v20:.4f} "
+            f"combined={combined:.4f} forecast={forecast:.1f}"
+        )
+
+        # ── 仓位计算 ──
+        atr_arr = _atr(highs, lows, closes)
+        optimal_raw = calc_optimal_lots(
+            forecast, atr_arr[bar_idx], close,
+            p.capital, p.max_lots, self._multiplier, ANNUAL_FACTOR,
+        )
+        optimal = round(optimal_raw)
+        _pos = self.get_position(p.instrument_id)
+        net_pos = _pos.net_position if _pos else 0
+        target = apply_buffer(optimal, net_pos)
+        target = min(target, p.max_lots)
         self.state_map.net_pos = net_pos
+        self.state_map.target_lots = target
+
+        # ── 持仓追踪 (多头: peak=最高价) ──
         if net_pos == 0:
             self.avg_price = 0.0
             self.peak_price = 0.0
-        elif close > self.peak_price:
+        elif self.peak_price == 0.0 or close > self.peak_price:
             self.peak_price = close
         self.state_map.avg_price = round(self.avg_price, 1)
         self.state_map.peak_price = round(self.peak_price, 1)
@@ -359,7 +584,7 @@ class TestFullModule(BaseStrategy):
             round(self.peak_price * (1 - p.trailing_pct / 100), 1) if net_pos > 0 else 0.0
         )
 
-        # 权益（RiskManager自动追踪peak和daily）
+        # ── 权益 ──
         acct = self._get_account()
         equity = pos_profit = 0.0
         if acct:
@@ -370,60 +595,68 @@ class TestFullModule(BaseStrategy):
             self.state_map.drawdown = f"{self._risk.drawdown_pct:.2%}"
             self.state_map.daily_pnl = f"{self._risk.daily_pnl_pct:+.2%}"
 
-        # ── 盘前清仓 (优先级最高, 立即执行不等next-bar) ──
-        if self._guard.should_flatten() and net_pos > 0:
-            self._pending_reason = f"距收盘<{p.flatten_minutes}分钟, 自动清仓"
-            self._exec_close(kline, net_pos, "FLATTEN")
-            self._push_widget(kline, -kline.close)
-            self.update_status_bar()
-            return
+        # 盘前清仓已禁用 — 完全靠信号和止损管理
+        # # ── 盘前清仓 ──
+        # if self._guard.should_flatten() and net_pos > 0:
+        #     self._pending_reason = f"距收盘<{p.flatten_minutes}分钟, 自动清仓"
+        #     self._exec_close(kline, net_pos, "FLATTEN")
+        #     self._push_widget(kline, -kline.close)
+        #     self.update_status_bar()
+        #     return
 
-        # ── 非交易时段不生成新信号 ──
+        # ── 非交易时段 ──
         if not self._guard.should_trade():
             self._push_widget(kline, signal_price)
             self.update_status_bar()
             return
 
-        # ── 止损检查（RiskManager管理daily_start_eq，21:00重置）──
-        action, reason = self._risk.check(
-            close=close, avg_price=self.avg_price, peak_price=self.peak_price,
-            pos_profit=pos_profit, net_pos=net_pos,
-            hard_stop_pct=p.hard_stop_pct,
-            trailing_pct=p.trailing_pct, equity_stop_pct=p.equity_stop_pct,
-        )
-        if action and action != "WARNING":
-            self._pending = action
-            self._pending_reason = reason
-            self.output(f"[{action}] {reason}")
-        elif action == "WARNING":
-            self.output(f"[预警] {reason}")
-            feishu("warning", p.instrument_id, f"**回撤预警**: {reason}")
+        # ── 止损检查 (多头: RiskManager直接处理) ──
+        if net_pos > 0:
+            action, reason = self._risk.check(
+                close=close, avg_price=self.avg_price, peak_price=self.peak_price,
+                pos_profit=pos_profit, net_pos=net_pos,
+                hard_stop_pct=p.hard_stop_pct,
+                trailing_pct=p.trailing_pct, equity_stop_pct=p.equity_stop_pct,
+            )
+            if action and action not in ("WARNING", "REDUCE"):
+                self._pending = action
+                self._pending_reason = reason
+                self.output(f"[{action}] {reason}")
+                self.state_map.pending = action
+                self._push_widget(kline, signal_price)
+                self.update_status_bar()
+                return
+            elif action == "REDUCE":
+                target = max(0, net_pos // 2)
+                self._pending_reason = reason
+                self.output(f"[REDUCE] {reason}")
+            elif action == "WARNING":
+                self.output(f"[预警] {reason}")
+                feishu("warning", p.instrument_id, f"**回撤预警**: {reason}")
 
-        # ── 正常信号 ──
-        if self._pending is None:
-            bullish = fast_ma > slow_ma
-            spread = abs(fast_ma - slow_ma) / slow_ma if slow_ma > 0 else 0
-
-            if net_pos == 0 and bullish:
-                self._pending = "OPEN"
-                self._pending_target = p.unit_volume
-                self._pending_reason = (
-                    f"金叉: MA{p.fast_period}={fast_ma:.1f} > MA{p.slow_period}={slow_ma:.1f}, "
-                    f"展幅={spread:.4%}"
-                )
-            elif net_pos > 0 and bullish and net_pos < p.max_lots and spread > ADD_SPREAD_THRESHOLD:
-                self._pending = "ADD"
-                self._pending_target = min(net_pos + p.unit_volume, p.max_lots)
-                self._pending_reason = (
-                    f"趋势加强: 展幅={spread:.4%} > {ADD_SPREAD_THRESHOLD:.4%}, "
-                    f"MA{p.fast_period}={fast_ma:.1f} > MA{p.slow_period}={slow_ma:.1f}"
-                )
-            elif net_pos > 0 and not bullish:
+        # ── Chandelier Exit (Long) ──
+        if self._pending is None and net_pos > 0:
+            ch_atr = _atr(highs, lows, closes, CHANDELIER_PERIOD)
+            if chandelier_long(highs, closes, ch_atr, bar_idx):
                 self._pending = "CLOSE"
-                self._pending_target = 0
-                self._pending_reason = (
-                    f"死叉: MA{p.fast_period}={fast_ma:.1f} <= MA{p.slow_period}={slow_ma:.1f}"
-                )
+                self._pending_reason = "Chandelier Exit (Long)"
+                self.output(f"[CHANDELIER] {self._pending_reason}")
+
+        # ── 正常信号 → pending ──
+        if self._pending is None and target != net_pos:
+            if net_pos == 0 and target > 0:
+                self._pending = "OPEN"
+            elif target == 0 and net_pos > 0:
+                self._pending = "CLOSE"
+            elif target > net_pos:
+                self._pending = "ADD"
+            elif target < net_pos:
+                self._pending = "REDUCE"
+            self._pending_target = target
+            self._pending_reason = (
+                f"V7={raw_v7:.2f} V20={raw_v20:.2f} combined={combined:.2f} "
+                f"forecast={forecast:.1f} optimal={optimal} target={target}"
+            )
 
         self.state_map.pending = self._pending or "---"
         self.state_map.slippage = self._slip.format_report()
@@ -431,31 +664,33 @@ class TestFullModule(BaseStrategy):
         self._push_widget(kline, signal_price)
         self.update_status_bar()
 
-    def real_time_callback(self, kline: KLineData):
-        self._push_widget(kline)
+    # ══════════════════════════════════════════════════════════════════════
+    #  执行 (LONG: open=buy, close=sell)
+    # ══════════════════════════════════════════════════════════════════════
 
-    # ══════════════════════════════════════════════════════════════════════
-    #  执行
-    # ══════════════════════════════════════════════════════════════════════
+    def _aggressive_price(self, price, direction):
+        """DCE实盘用当前价限价单代替市价."""
+        return price
 
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
         p = self.params_map
-        actual = self.get_position(p.instrument_id).net_position
+        pos = self.get_position(p.instrument_id)
+        actual = pos.net_position if pos else 0
 
         if action == "OPEN":
-            target = self._pending_target or p.unit_volume
+            target = self._pending_target or 1
             vol = max(1, target)
-            # 保证金检查
             acct = self._get_account()
             if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
                 self.output("[保证金不足]")
                 feishu("error", p.instrument_id, f"**保证金不足** 需开{vol}手")
                 return 0.0
             self._slip.set_signal_price(price)
+            buy_price = self._aggressive_price(price, "buy")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="buy", market=True,
+                volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
@@ -472,16 +707,17 @@ class TestFullModule(BaseStrategy):
             return price
 
         elif action == "ADD":
-            target = self._pending_target or (actual + p.unit_volume)
+            target = self._pending_target or (actual + 1)
             vol = max(1, target - actual)
             acct = self._get_account()
             if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
                 self.output("[加仓保证金不足]")
                 return 0.0
             self._slip.set_signal_price(price)
+            buy_price = self._aggressive_price(price, "buy")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="buy", market=True,
+                volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
@@ -504,16 +740,19 @@ class TestFullModule(BaseStrategy):
             vol = max(1, actual // 2)
             if actual <= 0:
                 return 0.0
+            self._slip.set_signal_price(price)
+            sell_price = self._aggressive_price(price, "sell")
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="sell", market=True,
+                volume=vol, price=sell_price, order_direction="sell",
             )
             if oid is not None:
                 self.order_id.add(oid)
-            self.state_map.last_action = f"回撤减仓{vol}手"
-            self._rec("回撤减仓", vol, "卖", price, actual, actual - vol)
+                self._om.on_send(oid, vol, price)
+            self.state_map.last_action = f"减仓{vol}手"
+            self._rec("减仓", vol, "卖", price, actual, actual - vol)
             feishu("reduce", p.instrument_id,
-                   f"**回撤减仓** {vol}手 @ {price:,.1f}\n"
+                   f"**减仓** {vol}手 @ {price:,.1f}\n"
                    f"逻辑: {self._pending_reason}\n"
                    f"持仓: {actual} -> {actual - vol}手")
             self._save()
@@ -526,9 +765,9 @@ class TestFullModule(BaseStrategy):
         return 0.0
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
-        """统一平仓逻辑."""
+        """统一平仓逻辑 (多头: 卖出平仓)."""
         labels = {
-            "CLOSE": "趋势出场", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
+            "CLOSE": "信号平仓", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
             "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损",
             "FLATTEN": "盘前清仓",
         }
@@ -539,9 +778,10 @@ class TestFullModule(BaseStrategy):
         if actual <= 0:
             return 0.0
         self._slip.set_signal_price(price)
+        sell_price = self._aggressive_price(price, "sell")
         oid = self.auto_close_position(
             exchange=p.exchange, instrument_id=p.instrument_id,
-            volume=actual, price=price, order_direction="sell", market=True,
+            volume=actual, price=sell_price, order_direction="sell",
         )
         if oid is not None:
             self.order_id.add(oid)
@@ -578,8 +818,8 @@ class TestFullModule(BaseStrategy):
             "trading_day": self._current_td,
             "today_trades": self._today_trades[-50:],
         }
-        state.update(self._risk.get_state())  # peak_equity, daily_start_eq
-        save_state(state, name="TestFullModule")
+        state.update(self._risk.get_state())
+        save_state(state, name=STRATEGY_NAME)
 
     def _send_review(self):
         p = self.params_map
@@ -587,24 +827,53 @@ class TestFullModule(BaseStrategy):
         net = pos.net_position if pos else 0
         acct = self._get_account()
         eq = acct.balance if acct else 0
-        dd_pct = self._risk.drawdown_pct * 100
+        available = acct.available if acct else 0
+        pos_profit = acct.position_profit if acct else 0
+        start_eq = self._risk.daily_start_eq
+        daily_abs = eq - start_eq
         daily_pct = self._risk.daily_pnl_pct * 100
-        daily_abs = eq - self._risk.daily_start_eq
-        if self._today_trades:
-            tbl = "| 时间 | 操作 | 手数 | 价格 | 持仓 |\n|--|--|--|--|--|\n"
-            for t in self._today_trades[-10:]:
-                tbl += (f"| {t['time']} | {t['action']} | "
-                        f"{t['lots']}({t['side']}) | {t['price']} | "
-                        f"{t['before']}->{t['after']} |\n")
+        dd_pct = self._risk.drawdown_pct * 100
+        peak_eq = self._risk.peak_equity
+
+        # 账户信息
+        account_info = (
+            f"**📊 账户概览**\n"
+            f"日初权益: {start_eq:,.0f}\n"
+            f"当前权益: {eq:,.0f}\n"
+            f"可用资金: {available:,.0f}\n"
+            f"日盈亏: {daily_abs:+,.0f} ({daily_pct:+.2f}%)\n"
+            f"峰值权益: {peak_eq:,.0f} | 回撤: {dd_pct:.2f}%"
+        )
+
+        # 持仓明细
+        if net > 0:
+            position_info = (
+                f"\n\n**📋 持仓明细**\n"
+                f"合约: {p.instrument_id} | 方向: 多 | 手数: {net}\n"
+                f"均价: {self.avg_price:.1f} | 峰值: {self.peak_price:.1f}\n"
+                f"浮盈: {pos_profit:+,.0f}"
+            )
         else:
-            tbl = "无交易"
+            position_info = "\n\n**📋 持仓明细**\n无持仓"
+
+        # 今日交易
+        if self._today_trades:
+            trade_info = f"\n\n**📝 今日交易 ({len(self._today_trades)}笔)**\n"
+            trade_info += "| 时间 | 操作 | 手数 | 价格 | 持仓变化 |\n|--|--|--|--|--|\n"
+            for t in self._today_trades[-20:]:
+                trade_info += (f"| {t['time']} | {t['action']} | "
+                               f"{t['lots']}({t['side']}) | {t['price']} | "
+                               f"{t['before']}->{t['after']} |\n")
+        else:
+            trade_info = "\n\n**📝 今日交易**\n无交易"
+
+        # 绩效
+        perf_info = f"\n\n**📈 绩效统计**\n{self._perf.format_report(p.instrument_id)}\n{self._slip.format_report()}"
+
         feishu("daily_review", p.instrument_id,
-               f"**每日回顾** (21:00起算)\n"
-               f"权益: {eq:,.0f} | 回撤: {dd_pct:.2f}%\n"
-               f"当日PnL: {daily_abs:+,.0f} ({daily_pct:+.2f}%)\n"
-               f"当日交易: {self._perf.daily_trade_count}笔 PnL{self._perf.daily_pnl:+,.0f}\n"
-               f"持仓: {net}手\n\n{tbl}\n\n"
-               f"{self._slip.format_report()}\n{self._perf.format_report(p.instrument_id)}")
+               f"**{STRATEGY_NAME} 每日总结**\n"
+               f"交易日: {self._current_td}\n\n"
+               f"{account_info}{position_info}{trade_info}{perf_info}")
 
     def _push_widget(self, kline, sp=0.0):
         try:
@@ -628,9 +897,8 @@ class TestFullModule(BaseStrategy):
         )
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
-        self.state_map.net_pos = self.get_position(
-            self.params_map.instrument_id
-        ).net_position
+        pos = self.get_position(self.params_map.instrument_id)
+        self.state_map.net_pos = pos.net_position if pos else 0
         self.update_status_bar()
 
     def on_order(self, order: OrderData):

@@ -1,0 +1,647 @@
+"""
+================================================================================
+  TestFullModule — M1 双均线 + 全模块集成测试
+================================================================================
+
+  目的: 验证全部12个模块在PythonGO实盘环境中协同工作
+  信号: MA(3) vs MA(7) 金叉做多, 死叉平仓, 展幅>0.1%加仓
+  部署: modules/ 放在 pyStrategy/modules/, 本文件放 self_strategy/
+
+================================================================================
+"""
+import time
+from datetime import datetime
+
+import numpy as np
+
+from pythongo.base import BaseParams, BaseState, Field
+from pythongo.classdef import KLineData, OrderData, TickData, TradeData
+from pythongo.ui import BaseStrategy
+from pythongo.utils import KLineGenerator
+
+# ── 模块导入 ──
+from modules.contract_info import get_multiplier, get_tick_size
+from modules.session_guard import SessionGuard
+from modules.feishu import feishu
+from modules.persistence import save_state, load_state
+from modules.trading_day import get_trading_day, is_new_day, DAY_START_HOUR
+from modules.risk import check_stops, RiskManager
+from modules.slippage import SlippageTracker
+from modules.heartbeat import HeartbeatMonitor
+from modules.order_monitor import OrderMonitor
+from modules.performance import PerformanceTracker
+from modules.rollover import check_rollover
+from modules.position_sizing import calc_optimal_lots, apply_buffer
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+VOL_ATR_PERIOD = 14
+ANNUAL_FACTOR = 252 * 240       # M1 bars/year
+DAILY_REVIEW_HOUR = 15
+DAILY_REVIEW_MINUTE = 15
+ADD_SPREAD_THRESHOLD = 0.001    # 展幅>0.1%才加仓
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INDICATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+def atr(highs, lows, closes, period=14):
+    """ATR with Wilder RMA smoothing."""
+    n = len(closes)
+    if n == 0 or n < period + 1:
+        return np.full(n, np.nan)
+    tr = np.empty(n)
+    tr[0] = highs[0] - lows[0]
+    for i in range(1, n):
+        tr[i] = max(highs[i] - lows[i],
+                     abs(highs[i] - closes[i - 1]),
+                     abs(lows[i] - closes[i - 1]))
+    out = np.full(n, np.nan)
+    out[period] = np.mean(tr[1:period + 1])
+    a = 1.0 / period
+    for i in range(period + 1, n):
+        out[i] = out[i - 1] * (1 - a) + tr[i] * a
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PARAMS / STATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Params(BaseParams):
+    exchange: str = Field(default="DCE", title="交易所代码")
+    instrument_id: str = Field(default="i2509", title="合约代码")
+    kline_style: str = Field(default="M1", title="K线周期")
+    fast_period: int = Field(default=3, title="快线周期")
+    slow_period: int = Field(default=7, title="慢线周期")
+    unit_volume: int = Field(default=1, title="每次手数")
+    max_lots: int = Field(default=3, title="最大持仓")
+    capital: float = Field(default=1_000_000, title="配置资金")
+    hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
+    trailing_pct: float = Field(default=0.3, title="移动止损(%)")
+    equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
+    flatten_minutes: int = Field(default=5, title="盘前清仓(分钟)")
+    sim_24h: bool = Field(default=True, title="24H模拟盘模式")
+
+
+class State(BaseState):
+    fast_ma: float = Field(default=0.0, title="快均线")
+    slow_ma: float = Field(default=0.0, title="慢均线")
+    net_pos: int = Field(default=0, title="净持仓")
+    avg_price: float = Field(default=0.0, title="均价")
+    peak_price: float = Field(default=0.0, title="最高价")
+    hard_line: float = Field(default=0.0, title="止损线")
+    trail_line: float = Field(default=0.0, title="移损线")
+    equity: float = Field(default=0.0, title="权益")
+    drawdown: str = Field(default="---", title="回撤")
+    daily_pnl: str = Field(default="---", title="当日盈亏")
+    trading_day: str = Field(default="", title="交易日")
+    session: str = Field(default="---", title="交易时段")
+    pending: str = Field(default="---", title="待执行")
+    last_action: str = Field(default="---", title="上次操作")
+    slippage: str = Field(default="---", title="滑点")
+    perf: str = Field(default="---", title="绩效")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STRATEGY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFullModule(BaseStrategy):
+    """M1 双均线 + 全模块集成测试"""
+
+    def __init__(self):
+        super().__init__()
+        self.params_map = Params()
+        self.state_map = State()
+        self.kline_generator = None
+
+        # 持仓状态
+        self.avg_price = 0.0
+        self.peak_price = 0.0
+        self._pending = None
+        self._pending_target = None
+        self._pending_reason = ""      # 触发逻辑描述
+        self.order_id = set()
+
+        # 权益追踪
+        self._investor_id = ""
+        self._risk = None  # RiskManager，在on_start初始化
+        self._current_td = ""
+        self._daily_review_sent = False
+        self._rollover_checked = False
+        self._today_trades = []
+
+        # 模块实例 (需要instrument_id的在on_start中初始化)
+        self._guard = None
+        self._slip = None
+        self._hb = None
+        self._om = OrderMonitor()
+        self._perf = None
+        self._multiplier = 100
+
+    @property
+    def main_indicator_data(self):
+        return {
+            f"MA{self.params_map.fast_period}": self.state_map.fast_ma,
+            f"MA{self.params_map.slow_period}": self.state_map.slow_ma,
+        }
+
+    def _get_account(self):
+        if not self._investor_id:
+            return None
+        return self.get_account_fund_data(self._investor_id)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  生命周期
+    # ══════════════════════════════════════════════════════════════════════
+
+    def on_start(self):
+        p = self.params_map
+
+        # 合约参数 (从contract_info获取, 不再硬编码)
+        self._multiplier = get_multiplier(p.instrument_id)
+
+        # 初始化需要instrument_id的模块
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._slip = SlippageTracker(p.instrument_id)
+        self._hb = HeartbeatMonitor(p.instrument_id)
+        self._perf = PerformanceTracker(p.instrument_id)
+
+        # K线
+        self.kline_generator = KLineGenerator(
+            callback=self.callback,
+            real_time_callback=self.real_time_callback,
+            exchange=p.exchange,
+            instrument_id=p.instrument_id,
+            style=p.kline_style,
+        )
+        self.kline_generator.push_history_data()
+
+        # 账户ID
+        inv = self.get_investor_data(1)
+        if inv:
+            self._investor_id = inv.investor_id
+
+        # 风控管理器（21:00 day start）
+        self._risk = RiskManager(capital=p.capital)
+
+        # 恢复状态
+        saved = load_state("TestFullModule")
+        if saved:
+            self._risk.load_state(saved)
+            self.peak_price = saved.get("peak_price", 0.0)
+            self.avg_price = saved.get("avg_price", 0.0)
+            self._current_td = saved.get("trading_day", "")
+            self._today_trades = saved.get("today_trades", [])
+            self.output(f"[恢复] peak_eq={self._risk.peak_equity:.0f} avg={self.avg_price:.1f}")
+
+        # 权益初始化
+        acct = self._get_account()
+        if acct:
+            if self._risk.peak_equity == p.capital:
+                self._risk.update(acct.balance)
+            if self._risk.daily_start_eq == p.capital:
+                self._risk.on_day_change(acct.balance)
+
+        # 信任broker持仓
+        pos = self.get_position(p.instrument_id)
+        actual = pos.net_position if pos else 0
+        self.state_map.net_pos = actual
+        if actual == 0:
+            self.avg_price = 0.0
+            self.peak_price = 0.0
+
+        if not self._current_td:
+            self._current_td = get_trading_day()
+        self.state_map.trading_day = self._current_td
+
+        # 换月检查
+        level, days = check_rollover(p.instrument_id)
+        if level:
+            feishu("rollover", p.instrument_id, f"**换月提醒**: 距交割月**{days}天**")
+
+        super().on_start()
+        self.output(
+            f"启动 | {p.instrument_id} {p.kline_style} | "
+            f"乘数={self._multiplier} | 持仓={actual}"
+        )
+        feishu("start", p.instrument_id,
+               f"**策略启动**\n合约: {p.instrument_id}\n乘数: {self._multiplier}\n持仓: {actual}手")
+
+    def on_stop(self):
+        self._save()
+        feishu("shutdown", self.params_map.instrument_id,
+               f"**策略停止**\n持仓: {self.state_map.net_pos}手\n"
+               f"{self._slip.format_report()}")
+        super().on_stop()
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Tick
+    # ══════════════════════════════════════════════════════════════════════
+
+    def on_tick(self, tick: TickData):
+        super().on_tick(tick)
+        self.kline_generator.tick_to_kline(tick)
+        p = self.params_map
+
+        # 交易日切换（21:00 day start）
+        td = get_trading_day()
+        if td != self._current_td and self._current_td:
+            acct = self._get_account()
+            if acct:
+                self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
+            self._perf.on_day_change()  # 重置每日PnL
+            self._today_trades = []
+            self._current_td = td
+            self.state_map.trading_day = td
+            self._daily_review_sent = False
+            self._rollover_checked = False
+            self._save()
+            self.output(f"[新交易日] {td} (21:00 day start)")
+        if not self._current_td:
+            self._current_td = td
+            self.state_map.trading_day = td
+
+        # 换月 (每天一次)
+        if not self._rollover_checked:
+            level, days = check_rollover(p.instrument_id)
+            if level:
+                feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
+            self._rollover_checked = True
+
+        # 心跳
+        for atype, msg in self._hb.check(p.instrument_id):
+            if atype == "no_tick":
+                feishu("no_tick", p.instrument_id, msg)
+
+        # 交易时段状态
+        self.state_map.session = self._guard.get_status()
+
+        # 每日回顾
+        now = datetime.now()
+        if (not self._daily_review_sent
+                and now.hour == DAILY_REVIEW_HOUR
+                and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
+            self._send_review()
+            self._daily_review_sent = True
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  K线回调
+    # ══════════════════════════════════════════════════════════════════════
+
+    def callback(self, kline: KLineData):
+        try:
+            self._on_bar(kline)
+        except Exception as e:
+            self.output(f"[callback异常] {type(e).__name__}: {e}")
+
+    def _on_bar(self, kline: KLineData):
+        signal_price = 0.0
+        p = self.params_map
+
+        # 撤挂单
+        for oid in list(self.order_id):
+            self.cancel_order(oid)
+        for oid in self._om.check_timeouts(self.cancel_order):
+            self.output(f"[超时撤单] {oid}")
+
+        # 历史回放阶段: 只推K线到图表, 不交易不算信号
+        if not self.trading:
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
+            self._push_widget(kline)
+            return
+
+        # 执行pending (next-bar规则)
+        if self._pending is not None:
+            signal_price = self._execute(kline, self._pending)
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
+            self._push_widget(kline, signal_price)
+            self.update_status_bar()
+            return
+
+        # 数据检查
+        producer = self.kline_generator.producer
+        if len(producer.close) < p.slow_period + 2:
+            self._push_widget(kline, signal_price)
+            return
+
+        # 指标 (不用producer.sma, 手动算避免ta_sma bad parameter)
+        closes = np.array(producer.close, dtype=np.float64)
+        close = float(closes[-1])
+        fast_ma = float(np.mean(closes[-p.fast_period:]))
+        slow_ma = float(np.mean(closes[-p.slow_period:]))
+        self.state_map.fast_ma = round(fast_ma, 2)
+        self.state_map.slow_ma = round(slow_ma, 2)
+
+        # 持仓
+        net_pos = self.get_position(p.instrument_id).net_position
+        self.state_map.net_pos = net_pos
+        if net_pos == 0:
+            self.avg_price = 0.0
+            self.peak_price = 0.0
+        elif close > self.peak_price:
+            self.peak_price = close
+        self.state_map.avg_price = round(self.avg_price, 1)
+        self.state_map.peak_price = round(self.peak_price, 1)
+        self.state_map.hard_line = (
+            round(self.avg_price * (1 - p.hard_stop_pct / 100), 1) if net_pos > 0 else 0.0
+        )
+        self.state_map.trail_line = (
+            round(self.peak_price * (1 - p.trailing_pct / 100), 1) if net_pos > 0 else 0.0
+        )
+
+        # 权益（RiskManager自动追踪peak和daily）
+        acct = self._get_account()
+        equity = pos_profit = 0.0
+        if acct:
+            equity = acct.balance
+            pos_profit = acct.position_profit
+            self._risk.update(equity)
+            self.state_map.equity = round(equity, 0)
+            self.state_map.drawdown = f"{self._risk.drawdown_pct:.2%}"
+            self.state_map.daily_pnl = f"{self._risk.daily_pnl_pct:+.2%}"
+
+        # 盘前清仓已禁用 — 完全靠信号和止损管理
+        # # ── 盘前清仓 (优先级最高, 立即执行不等next-bar) ──
+        # if self._guard.should_flatten() and net_pos > 0:
+        #     self._pending_reason = f"距收盘<{p.flatten_minutes}分钟, 自动清仓"
+        #     self._exec_close(kline, net_pos, "FLATTEN")
+        #     self._push_widget(kline, -kline.close)
+        #     self.update_status_bar()
+        #     return
+
+        # ── 非交易时段不生成新信号 ──
+        if not self._guard.should_trade():
+            self._push_widget(kline, signal_price)
+            self.update_status_bar()
+            return
+
+        # ── 止损检查（RiskManager管理daily_start_eq，21:00重置）──
+        action, reason = self._risk.check(
+            close=close, avg_price=self.avg_price, peak_price=self.peak_price,
+            pos_profit=pos_profit, net_pos=net_pos,
+            hard_stop_pct=p.hard_stop_pct,
+            trailing_pct=p.trailing_pct, equity_stop_pct=p.equity_stop_pct,
+        )
+        if action and action != "WARNING":
+            self._pending = action
+            self._pending_reason = reason
+            self.output(f"[{action}] {reason}")
+        elif action == "WARNING":
+            self.output(f"[预警] {reason}")
+            feishu("warning", p.instrument_id, f"**回撤预警**: {reason}")
+
+        # ── 正常信号 ──
+        if self._pending is None:
+            bullish = fast_ma > slow_ma
+            spread = abs(fast_ma - slow_ma) / slow_ma if slow_ma > 0 else 0
+
+            if net_pos == 0 and bullish:
+                self._pending = "OPEN"
+                self._pending_target = p.unit_volume
+                self._pending_reason = (
+                    f"金叉: MA{p.fast_period}={fast_ma:.1f} > MA{p.slow_period}={slow_ma:.1f}, "
+                    f"展幅={spread:.4%}"
+                )
+            elif net_pos > 0 and bullish and net_pos < p.max_lots and spread > ADD_SPREAD_THRESHOLD:
+                self._pending = "ADD"
+                self._pending_target = min(net_pos + p.unit_volume, p.max_lots)
+                self._pending_reason = (
+                    f"趋势加强: 展幅={spread:.4%} > {ADD_SPREAD_THRESHOLD:.4%}, "
+                    f"MA{p.fast_period}={fast_ma:.1f} > MA{p.slow_period}={slow_ma:.1f}"
+                )
+            elif net_pos > 0 and not bullish:
+                self._pending = "CLOSE"
+                self._pending_target = 0
+                self._pending_reason = (
+                    f"死叉: MA{p.fast_period}={fast_ma:.1f} <= MA{p.slow_period}={slow_ma:.1f}"
+                )
+
+        self.state_map.pending = self._pending or "---"
+        self.state_map.slippage = self._slip.format_report()
+        self.state_map.perf = self._perf.format_short()
+        self._push_widget(kline, signal_price)
+        self.update_status_bar()
+
+    def real_time_callback(self, kline: KLineData):
+        self._push_widget(kline)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  执行
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _execute(self, kline: KLineData, action: str) -> float:
+        price = kline.close
+        p = self.params_map
+        actual = self.get_position(p.instrument_id).net_position
+
+        if action == "OPEN":
+            target = self._pending_target or p.unit_volume
+            vol = max(1, target)
+            # 保证金检查
+            acct = self._get_account()
+            if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
+                self.output("[保证金不足]")
+                feishu("error", p.instrument_id, f"**保证金不足** 需开{vol}手")
+                return 0.0
+            self._slip.set_signal_price(price)
+            oid = self.send_order(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=price, order_direction="buy", market=True,
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, vol, price)
+            self.avg_price = price
+            self.peak_price = price
+            self.state_map.last_action = f"建仓{vol}手"
+            self._rec("建仓", vol, "买", price, actual, actual + vol)
+            feishu("open", p.instrument_id,
+                   f"**建仓** {vol}手 @ {price:,.1f}\n"
+                   f"逻辑: {self._pending_reason}\n"
+                   f"持仓: {actual} -> {actual + vol}手")
+            self._save()
+            return price
+
+        elif action == "ADD":
+            target = self._pending_target or (actual + p.unit_volume)
+            vol = max(1, target - actual)
+            acct = self._get_account()
+            if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
+                self.output("[加仓保证金不足]")
+                return 0.0
+            self._slip.set_signal_price(price)
+            oid = self.send_order(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=price, order_direction="buy", market=True,
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, vol, price)
+            self.avg_price = (
+                (self.avg_price * actual + price * vol) / (actual + vol)
+                if actual > 0 else price
+            )
+            self.state_map.last_action = f"加仓{vol}手"
+            self._rec("加仓", vol, "买", price, actual, actual + vol)
+            feishu("add", p.instrument_id,
+                   f"**加仓** {vol}手 @ {price:,.1f}\n"
+                   f"逻辑: {self._pending_reason}\n"
+                   f"均价: {self.avg_price:.1f}\n"
+                   f"持仓: {actual} -> {actual + vol}手")
+            self._save()
+            return price
+
+        elif action == "REDUCE":
+            vol = max(1, actual // 2)
+            if actual <= 0:
+                return 0.0
+            oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=price, order_direction="sell", market=True,
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+            self.state_map.last_action = f"回撤减仓{vol}手"
+            self._rec("回撤减仓", vol, "卖", price, actual, actual - vol)
+            feishu("reduce", p.instrument_id,
+                   f"**回撤减仓** {vol}手 @ {price:,.1f}\n"
+                   f"逻辑: {self._pending_reason}\n"
+                   f"持仓: {actual} -> {actual - vol}手")
+            self._save()
+            return -price
+
+        elif action in ("CLOSE", "HARD_STOP", "TRAIL_STOP", "EQUITY_STOP",
+                         "CIRCUIT", "DAILY_STOP", "FLATTEN"):
+            return self._exec_close(kline, actual, action)
+
+        return 0.0
+
+    def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
+        """统一平仓逻辑."""
+        labels = {
+            "CLOSE": "趋势出场", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
+            "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损",
+            "FLATTEN": "盘前清仓",
+        }
+        label = labels.get(action, action)
+        p = self.params_map
+        price = kline.close
+
+        if actual <= 0:
+            return 0.0
+        self._slip.set_signal_price(price)
+        oid = self.auto_close_position(
+            exchange=p.exchange, instrument_id=p.instrument_id,
+            volume=actual, price=price, order_direction="sell", market=True,
+        )
+        if oid is not None:
+            self.order_id.add(oid)
+            self._om.on_send(oid, actual, price)
+        pnl_pct = (price - self.avg_price) / self.avg_price * 100 if self.avg_price > 0 else 0
+        abs_pnl = self._perf.on_close(self.avg_price, price, actual)
+        self.state_map.last_action = f"{label} {pnl_pct:+.2f}%"
+        self._rec(label, actual, "卖", price, actual, 0)
+        feishu(action.lower(), p.instrument_id,
+               f"**{label}** {actual}手 @ {price:,.1f}\n"
+               f"逻辑: {self._pending_reason}\n"
+               f"盈亏: {pnl_pct:+.2f}% ({abs_pnl:+,.0f})\n"
+               f"持仓: {actual} -> 0手")
+        self.avg_price = 0.0
+        self.peak_price = 0.0
+        self._save()
+        return -price
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  辅助
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _rec(self, action, lots, side, price, before, after):
+        self._today_trades.append({
+            "time": time.strftime("%H:%M:%S"), "action": action,
+            "lots": lots, "side": side, "price": round(price, 1),
+            "before": before, "after": after,
+        })
+
+    def _save(self):
+        state = {
+            "peak_price": self.peak_price,
+            "avg_price": self.avg_price,
+            "trading_day": self._current_td,
+            "today_trades": self._today_trades[-50:],
+        }
+        state.update(self._risk.get_state())  # peak_equity, daily_start_eq
+        save_state(state, name="TestFullModule")
+
+    def _send_review(self):
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        net = pos.net_position if pos else 0
+        acct = self._get_account()
+        eq = acct.balance if acct else 0
+        dd_pct = self._risk.drawdown_pct * 100
+        daily_pct = self._risk.daily_pnl_pct * 100
+        daily_abs = eq - self._risk.daily_start_eq
+        if self._today_trades:
+            tbl = "| 时间 | 操作 | 手数 | 价格 | 持仓 |\n|--|--|--|--|--|\n"
+            for t in self._today_trades[-10:]:
+                tbl += (f"| {t['time']} | {t['action']} | "
+                        f"{t['lots']}({t['side']}) | {t['price']} | "
+                        f"{t['before']}->{t['after']} |\n")
+        else:
+            tbl = "无交易"
+        feishu("daily_review", p.instrument_id,
+               f"**每日回顾** (21:00起算)\n"
+               f"权益: {eq:,.0f} | 回撤: {dd_pct:.2f}%\n"
+               f"当日PnL: {daily_abs:+,.0f} ({daily_pct:+.2f}%)\n"
+               f"当日交易: {self._perf.daily_trade_count}笔 PnL{self._perf.daily_pnl:+,.0f}\n"
+               f"持仓: {net}手\n\n{tbl}\n\n"
+               f"{self._slip.format_report()}\n{self._perf.format_report(p.instrument_id)}")
+
+    def _push_widget(self, kline, sp=0.0):
+        try:
+            self.widget.recv_kline({
+                "kline": kline, "signal_price": sp, **self.main_indicator_data,
+            })
+        except Exception:
+            pass
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  回调
+    # ══════════════════════════════════════════════════════════════════════
+
+    def on_trade(self, trade: TradeData, log=True):
+        super().on_trade(trade, log=True)
+        self.order_id.discard(trade.order_id)
+        self._om.on_fill(trade.order_id)
+        slip = self._slip.on_fill(
+            trade.price, trade.volume,
+            "buy" if "买" in str(trade.direction) else "sell",
+        )
+        if slip != 0:
+            self.output(f"[滑点] {slip:.1f}ticks")
+        self.state_map.net_pos = self.get_position(
+            self.params_map.instrument_id
+        ).net_position
+        self.update_status_bar()
+
+    def on_order(self, order: OrderData):
+        super().on_order(order)
+
+    def on_order_cancel(self, order: OrderData):
+        super().on_order_cancel(order)
+        self.order_id.discard(order.order_id)
+        self._om.on_cancel(order.order_id)
+
+    def on_error(self, error):
+        self.output(f"[错误] {error}")
+        feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
