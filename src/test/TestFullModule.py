@@ -74,7 +74,7 @@ def atr(highs, lows, closes, period=14):
 
 class Params(BaseParams):
     exchange: str = Field(default="DCE", title="交易所代码")
-    instrument_id: str = Field(default="i2509", title="合约代码")
+    instrument_id: str = Field(default="i2609", title="合约代码")
     kline_style: str = Field(default="M1", title="K线周期")
     fast_period: int = Field(default=3, title="快线周期")
     slow_period: int = Field(default=7, title="慢线周期")

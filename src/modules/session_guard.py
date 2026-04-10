@@ -6,7 +6,7 @@
 使用示例::
 
     from modules.session_guard import SessionGuard
-    guard = SessionGuard("i2509", flatten_minutes=5)
+    guard = SessionGuard("i2609", flatten_minutes=5)
 
     # In callback:
     if guard.should_flatten():
@@ -28,7 +28,7 @@ class SessionGuard:
     def __init__(self, instrument_id: str, flatten_minutes: int = 5, sim_24h: bool = False):
         """
         Args:
-            instrument_id: 合约代码，如 "i2509"，用于查询交易时段。
+            instrument_id: 合约代码，如 "i2609"，用于查询交易时段。
             flatten_minutes: 距每节收盘多少分钟开始触发清仓（默认 5 分钟）。
             sim_24h: True 时跳过时段检查，适用于24小时模拟盘。
         """

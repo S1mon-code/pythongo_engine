@@ -33,7 +33,7 @@ MA_SLOW = 10
 
 class Params(BaseParams):
     exchange: str = Field(default="DCE", title="交易所")
-    instrument_id: str = Field(default="i2509", title="合约")
+    instrument_id: str = Field(default="i2609", title="合约")
     kline_style: str = Field(default="M1", title="K线周期")
     max_position: int = Field(default=10, title="最大手数")
     flatten_minutes: int = Field(default=5, title="清仓提前")

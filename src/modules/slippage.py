@@ -2,7 +2,7 @@
 
 用法:
     from modules.slippage import SlippageTracker
-    slip = SlippageTracker("i2509")
+    slip = SlippageTracker("i2609")
     slip.set_signal_price(800.0)          # 信号产生时
     ticks = slip.on_fill(800.5, 3, "buy") # 成交时 → 1.0 ticks
     stats = slip.get_stats()              # {"avg": 1.0, "max": 1.0, "n": 1}

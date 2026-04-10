@@ -2,8 +2,8 @@
 
 用法:
     from modules.heartbeat import HeartbeatMonitor
-    hb = HeartbeatMonitor("i2509", interval_min=30)
-    alerts = hb.check("i2509")  # 在on_tick中调用
+    hb = HeartbeatMonitor("i2609", interval_min=30)
+    alerts = hb.check("i2609")  # 在on_tick中调用
     for atype, msg in alerts:
         if atype == "no_tick": feishu("no_tick", symbol, msg)
 """

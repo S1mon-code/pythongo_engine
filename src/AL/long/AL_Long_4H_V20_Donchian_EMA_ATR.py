@@ -189,7 +189,7 @@ def chandelier_long(highs, closes, atr_arr, bar_idx):
 
 class Params(BaseParams):
     exchange: str = Field(default="SHFE", title="交易所代码")
-    instrument_id: str = Field(default="al2507", title="合约代码")
+    instrument_id: str = Field(default="al2605", title="合约代码")
     kline_style: str = Field(default="H4", title="K线周期")
     max_lots: int = Field(default=5, title="最大持仓")
     capital: float = Field(default=5_000_000, title="配置资金")

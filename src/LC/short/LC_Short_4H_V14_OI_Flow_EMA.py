@@ -172,7 +172,7 @@ def chandelier_short(lows, closes, atr_arr, bar_idx):
 
 class Params(BaseParams):
     exchange: str = Field(default="GFEX", title="交易所")
-    instrument_id: str = Field(default="lc2507", title="合约")
+    instrument_id: str = Field(default="lc2609", title="合约")
     kline_style: str = Field(default="H4", title="K线")
     max_lots: int = Field(default=5, title="最大手数")
     capital: float = Field(default=5_000_000, title="资金")

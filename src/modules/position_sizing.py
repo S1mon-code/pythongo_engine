@@ -3,7 +3,7 @@
 用法:
     from modules.position_sizing import calc_optimal_lots, apply_buffer
     from modules.contract_info import get_multiplier
-    mult = get_multiplier("i2509")  # 100
+    mult = get_multiplier("i2609")  # 100
     optimal = calc_optimal_lots(forecast=7.0, atr_val=15.0, price=800.0,
                                 capital=1000000, max_lots=10, multiplier=mult)
     target = apply_buffer(optimal, current_pos=3)

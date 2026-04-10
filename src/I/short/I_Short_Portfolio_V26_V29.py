@@ -283,7 +283,7 @@ def chandelier_short(lows, closes, atr_arr, bar_idx):
 
 class Params(BaseParams):
     exchange: str = Field(default="DCE", title="交易所代码")
-    instrument_id: str = Field(default="i2509", title="合约代码")
+    instrument_id: str = Field(default="i2609", title="合约代码")
     max_lots: int = Field(default=10, title="最大持仓")
     capital: float = Field(default=5_000_000, title="配置资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")

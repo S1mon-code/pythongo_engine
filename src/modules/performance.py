@@ -4,12 +4,12 @@
 
 用法:
     from modules.performance import PerformanceTracker
-    perf = PerformanceTracker("i2509")
+    perf = PerformanceTracker("i2609")
     perf.on_close(entry_px=800.0, exit_px=810.0, lots=3)
     perf.on_day_change()   # 21:00交易日切换时调用
     summary = perf.get_summary()
     daily = perf.get_daily_summary()
-    report = perf.format_report("i2509")
+    report = perf.format_report("i2609")
 """
 import time
 

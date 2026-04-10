@@ -2,7 +2,7 @@
 
 用法:
     from modules.rollover import check_rollover
-    level, days = check_rollover("i2509")
+    level, days = check_rollover("i2609")
     # level: None | "warn"(15天内) | "urgent"(5天内)
     # days: 距交割月天数
 """
@@ -13,7 +13,7 @@ def check_rollover(instrument_id):
     """检查合约是否临近交割月.
 
     Args:
-        instrument_id: 如 "i2509"
+        instrument_id: 如 "i2609"
 
     Returns:
         (level, days) — level: None/"warn"/"urgent", days: 距交割月1日天数

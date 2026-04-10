@@ -6,9 +6,9 @@
 
 用法示例:
     from modules.contract_info import get_multiplier, get_tick_size, is_near_close
-    mult = get_multiplier("i2509")      # 100
+    mult = get_multiplier("i2609")      # 100
     tick = get_tick_size("ag2506")       # 1
-    close = is_near_close("i2509", 5)   # True if within 5min of session end
+    close = is_near_close("i2609", 5)   # True if within 5min of session end
 """
 
 import re
@@ -239,7 +239,7 @@ _DEFAULT_SPEC = {
 
 
 def _extract_product(instrument_id: str) -> str:
-    """从合约代码中提取品种代码，如 'i2509' -> 'i', 'ag2506' -> 'ag'"""
+    """从合约代码中提取品种代码，如 'i2609' -> 'i', 'ag2506' -> 'ag'"""
     match = re.match(r"^([a-zA-Z]+)", instrument_id)
     if match:
         return match.group(1).lower()
@@ -251,7 +251,7 @@ def get_contract(instrument_id: str) -> dict:
     获取合约规格信息
 
     Args:
-        instrument_id: 合约代码，如 "i2509", "ag2506"
+        instrument_id: 合约代码，如 "i2609", "ag2506"
 
     Returns:
         dict with keys: product, exchange, multiplier, tick_size, sessions

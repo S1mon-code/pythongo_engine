@@ -2,7 +2,7 @@
 
 用法:
     from modules.feishu import feishu
-    feishu("open", "i2509", "**建仓** 3手 @ 800.0")
+    feishu("open", "i2609", "**建仓** 3手 @ 800.0")
 """
 import time
 import threading
