@@ -84,7 +84,7 @@ class Params(BaseParams):
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
     trailing_pct: float = Field(default=0.3, title="移动止损(%)")
     equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
-    flatten_minutes: int = Field(default=5, title="盘前清仓(分钟)")
+    flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=True, title="24H模拟盘模式")
 
 
@@ -248,47 +248,49 @@ class TestFullModule(BaseStrategy):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
         p = self.params_map
+        try:
+            # 交易日切换（21:00 day start）
+            td = get_trading_day()
+            if td != self._current_td and self._current_td:
+                acct = self._get_account()
+                if acct:
+                    self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
+                self._perf.on_day_change()  # 重置每日PnL
+                self._today_trades = []
+                self._current_td = td
+                self.state_map.trading_day = td
+                self._daily_review_sent = False
+                self._rollover_checked = False
+                self._save()
+                self.output(f"[新交易日] {td} (21:00 day start)")
+            if not self._current_td:
+                self._current_td = td
+                self.state_map.trading_day = td
 
-        # 交易日切换（21:00 day start）
-        td = get_trading_day()
-        if td != self._current_td and self._current_td:
-            acct = self._get_account()
-            if acct:
-                self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
-            self._perf.on_day_change()  # 重置每日PnL
-            self._today_trades = []
-            self._current_td = td
-            self.state_map.trading_day = td
-            self._daily_review_sent = False
-            self._rollover_checked = False
-            self._save()
-            self.output(f"[新交易日] {td} (21:00 day start)")
-        if not self._current_td:
-            self._current_td = td
-            self.state_map.trading_day = td
+            # 换月 (每天一次)
+            if not self._rollover_checked:
+                level, days = check_rollover(p.instrument_id)
+                if level:
+                    feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
+                self._rollover_checked = True
 
-        # 换月 (每天一次)
-        if not self._rollover_checked:
-            level, days = check_rollover(p.instrument_id)
-            if level:
-                feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
-            self._rollover_checked = True
+            # 心跳
+            for atype, msg in self._hb.check(p.instrument_id):
+                if atype == "no_tick":
+                    feishu("no_tick", p.instrument_id, msg)
 
-        # 心跳
-        for atype, msg in self._hb.check(p.instrument_id):
-            if atype == "no_tick":
-                feishu("no_tick", p.instrument_id, msg)
+            # 交易时段状态
+            self.state_map.session = self._guard.get_status()
 
-        # 交易时段状态
-        self.state_map.session = self._guard.get_status()
-
-        # 每日回顾
-        now = datetime.now()
-        if (not self._daily_review_sent
-                and now.hour == DAILY_REVIEW_HOUR
-                and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
-            self._send_review()
-            self._daily_review_sent = True
+            # 每日回顾
+            now = datetime.now()
+            if (not self._daily_review_sent
+                    and now.hour == DAILY_REVIEW_HOUR
+                    and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
+                self._send_review()
+                self._daily_review_sent = True
+        except Exception as e:
+            self.output(f"[on_tick异常] {type(e).__name__}: {e}")
 
     # ══════════════════════════════════════════════════════════════════════
     #  K线回调
@@ -531,7 +533,7 @@ class TestFullModule(BaseStrategy):
         labels = {
             "CLOSE": "趋势出场", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
             "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损",
-            "FLATTEN": "盘前清仓",
+            "FLATTEN": "即将收盘清仓",
         }
         label = labels.get(action, action)
         p = self.params_map
@@ -629,6 +631,19 @@ class TestFullModule(BaseStrategy):
         )
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        actual = pos.net_position if pos else 0
+        direction = "buy" if "买" in str(trade.direction) else "sell"
+        if direction == "buy" and actual > 0:
+            old_pos = max(0, actual - trade.volume)
+            if old_pos > 0 and self.avg_price > 0:
+                self.avg_price = (self.avg_price * old_pos + trade.price * trade.volume) / actual
+            else:
+                self.avg_price = trade.price
+        elif direction == "sell" and actual == 0:
+            self.avg_price = 0.0
+            self.peak_price = 0.0
         self.state_map.net_pos = self.get_position(
             self.params_map.instrument_id
         ).net_position

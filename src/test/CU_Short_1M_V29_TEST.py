@@ -180,11 +180,11 @@ class Params(BaseParams):
     instrument_id: str = Field(default="cu2605", title="合约代码")
     kline_style: str = Field(default="M1", title="K线周期")
     max_lots: int = Field(default=5, title="最大持仓")
-    capital: float = Field(default=10_000_000, title="配置资金")
+    capital: float = Field(default=1_000_000, title="配置资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
     trailing_pct: float = Field(default=0.3, title="移动止损(%)")
     equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
-    flatten_minutes: int = Field(default=5, title="盘前清仓(分钟)")
+    flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=True, title="24H模拟盘模式")
 
 
@@ -291,21 +291,24 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
     def on_tick(self, tick: TickData):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
-        td = get_trading_day()
-        if td != self._current_td and self._current_td:
-            acct = self._get_account()
-            if acct:
-                self._risk.on_day_change(acct.balance)
-            self._perf.on_day_change()
-            self._today_trades = []
-            self._current_td = td
-            self.state_map.trading_day = td
-            self._daily_review_sent = False
-            self._save()
-        if not self._current_td:
-            self._current_td = td
-            self.state_map.trading_day = td
-        self.state_map.session = self._guard.get_status()
+        try:
+            td = get_trading_day()
+            if td != self._current_td and self._current_td:
+                acct = self._get_account()
+                if acct:
+                    self._risk.on_day_change(acct.balance)
+                self._perf.on_day_change()
+                self._today_trades = []
+                self._current_td = td
+                self.state_map.trading_day = td
+                self._daily_review_sent = False
+                self._save()
+            if not self._current_td:
+                self._current_td = td
+                self.state_map.trading_day = td
+            self.state_map.session = self._guard.get_status()
+        except Exception as e:
+            self.output(f"[on_tick异常] {type(e).__name__}: {e}")
 
     def callback(self, kline: KLineData):
         try:
@@ -537,7 +540,7 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
         labels = {"CLOSE": "信号平仓", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
-                  "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损", "FLATTEN": "盘前清仓"}
+                  "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损", "FLATTEN": "即将收盘清仓"}
         label = labels.get(action, action)
         p = self.params_map
         price = kline.close
@@ -550,7 +553,7 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
             self.order_id.add(oid)
             self._om.on_send(oid, actual, price)
         pnl_pct = (self.avg_price - price) / self.avg_price * 100 if self.avg_price > 0 else 0
-        abs_pnl = self._perf.on_close(self.avg_price, price, actual)
+        abs_pnl = self._perf.on_close(self.avg_price, price, actual, direction="short")
         self.state_map.last_action = f"{label} {pnl_pct:+.2f}%"
         self._rec(label, actual, "买", price, actual, 0)
         feishu(action.lower(), p.instrument_id, f"**{label}** {actual}手 @ {price:,.1f}\n盈亏: {pnl_pct:+.2f}%")
@@ -581,6 +584,19 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
         self._slip.on_fill(trade.price, trade.volume, "buy" if "买" in str(trade.direction) else "sell")
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        actual = abs(pos.net_position) if pos else 0
+        direction = "buy" if "买" in str(trade.direction) else "sell"
+        if direction == "sell" and actual > 0:
+            old_pos = max(0, actual - trade.volume)
+            if old_pos > 0 and self.avg_price > 0:
+                self.avg_price = (self.avg_price * old_pos + trade.price * trade.volume) / actual
+            else:
+                self.avg_price = trade.price
+        elif direction == "buy" and actual == 0:
+            self.avg_price = 0.0
+            self.trough_price = 0.0
         self.state_map.net_pos = self.get_position(self.params_map.instrument_id).net_position
         self.update_status_bar()
 

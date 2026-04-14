@@ -30,6 +30,7 @@ from modules.risk import check_stops, RiskManager
 from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
 from modules.order_monitor import OrderMonitor
+from modules.twap import TWAPExecutor, IMMEDIATE_ACTIONS
 from modules.performance import PerformanceTracker
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
@@ -209,11 +210,11 @@ class Params(BaseParams):
     instrument_id: str = Field(default="i2609", title="合约代码")
     kline_style: str = Field(default="H4", title="K线周期")
     max_lots: int = Field(default=5, title="最大持仓")
-    capital: float = Field(default=5_000_000, title="配置资金")
+    capital: float = Field(default=1_000_000, title="配置资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
     trailing_pct: float = Field(default=0.3, title="移动止损(%)")
     equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
-    flatten_minutes: int = Field(default=5, title="盘前清仓(分钟)")
+    flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=False, title="24H模拟盘模式")
 
 
@@ -271,6 +272,7 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         self._slip = None
         self._hb = None
         self._om = OrderMonitor()
+        self._twap = TWAPExecutor()
         self._perf = None
         self._multiplier = 100
 
@@ -362,8 +364,53 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
     # ══════════════════════════════════════════════════════════════════════
 
     def on_tick(self, tick: TickData):
+        # 第一层: K线数据 (永远不能断)
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
+
+        # 第二层: TWAP执行 (不能被辅助逻辑异常中断)
+        try:
+            self._on_tick_twap(tick)
+        except Exception as e:
+            self.output(f"[TWAP异常] {type(e).__name__}: {e}")
+
+        # 第三层: 辅助逻辑 (异常不影响K线和TWAP)
+        try:
+            self._on_tick_aux(tick)
+        except Exception as e:
+            self.output(f"[on_tick异常] {type(e).__name__}: {e}")
+            feishu("error", self.params_map.instrument_id,
+                   f"**on_tick异常**\n{type(e).__name__}: {e}")
+
+    def _on_tick_twap(self, tick: TickData):
+        """TWAP分批执行."""
+        if not self._twap.is_active:
+            return
+        batch = self._twap.check()
+        if batch is None:
+            return
+        p = self.params_map
+        price = tick.last_price
+        direction = self._twap.direction
+        agg_price = self._aggressive_price(price, direction)
+        if direction == "sell":
+            oid = self.send_order(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=batch, price=agg_price, order_direction="sell",
+            )
+        else:
+            oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=batch, price=agg_price, order_direction="buy",
+            )
+        if oid is not None:
+            self.order_id.add(oid)
+            self._om.on_send(oid, batch, price)
+            self._twap.on_send(oid, batch)
+        self.output(f"[TWAP] {direction} {batch}手 @ {price:.1f} ({self._twap.progress})")
+
+    def _on_tick_aux(self, tick: TickData):
+        """辅助逻辑: 交易日切换/换月/心跳/日报."""
         p = self.params_map
 
         td = get_trading_day()
@@ -419,11 +466,12 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         signal_price = 0.0
         p = self.params_map
 
-        # 撤挂单
-        for oid in list(self.order_id):
-            self.cancel_order(oid)
-        for oid in self._om.check_timeouts(self.cancel_order):
-            self.output(f"[超时撤单] {oid}")
+        # 撤挂单 (TWAP进行中不撤)
+        if not self._twap.is_active:
+            for oid in list(self.order_id):
+                self.cancel_order(oid)
+            for oid in self._om.check_timeouts(self.cancel_order):
+                self.output(f"[超时撤单] {oid}")
 
         # 历史回放
         if not self.trading:
@@ -433,15 +481,36 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
             self._push_widget(kline)
             return
 
-        # 执行pending (next-bar规则)
+        # 执行pending: 止损立即(即使TWAP进行中也要执行), 正常信号→TWAP
         if self._pending is not None:
-            signal_price = self._execute(kline, self._pending)
+            action = self._pending
+            if action in IMMEDIATE_ACTIONS:
+                # 止损优先: 取消TWAP, 立即执行
+                if self._twap.is_active:
+                    self._twap.cancel()
+                    for oid in list(self.order_id):
+                        self.cancel_order(oid)
+                    self.output(f"[TWAP取消+撤单] 止损优先: {action}")
+                signal_price = self._execute(kline, action)
+            elif self._twap.is_active:
+                # TWAP进行中, 非止损pending忽略
+                self.output(f"[TWAP进行中] 忽略pending {action}")
+                signal_price = 0.0
+            else:
+                self._submit_twap(kline, action)
+                signal_price = 0.0
             self._pending = None
             self._pending_target = None
             self._pending_reason = ""
             self._push_widget(kline, signal_price)
             self.update_status_bar()
             return
+
+        # TWAP进行中 → 不产生新信号, 但仍需检查止损
+        if self._twap.is_active:
+            self.output(f"[TWAP进行中] {self._twap.progress}")
+            # 继续往下走, 让止损检查能执行
+            # 但不产生新的正常信号
 
         # 数据准备
         producer = self.kline_generator.producer
@@ -574,8 +643,8 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
                 self._pending_reason = "Chandelier Exit (Short)"
                 self.output(f"[CHANDELIER] {self._pending_reason}")
 
-        # ── 正常信号 → pending ──
-        if self._pending is None and target != net_pos:
+        # ── 正常信号 → pending (TWAP进行中不产生新正常信号) ──
+        if self._pending is None and not self._twap.is_active and target != net_pos:
             if net_pos == 0 and target > 0:
                 self._pending = "OPEN"
             elif target == 0 and net_pos > 0:
@@ -603,6 +672,43 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
     def _aggressive_price(self, price, direction):
         """SHFE实盘不支持市价卖单，用当前价限价单代替."""
         return price
+
+    def _submit_twap(self, kline: KLineData, action: str):
+        """将正常信号提交给TWAP分批执行."""
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        actual = abs(pos.net_position) if pos else 0
+
+        if action == "OPEN":
+            vol = max(1, self._pending_target or 1)
+            direction = "sell"    # 做空开仓 = 卖
+        elif action == "ADD":
+            vol = max(1, (self._pending_target or (actual + 1)) - actual)
+            direction = "sell"
+        elif action == "REDUCE":
+            vol = max(1, actual - (self._pending_target or (actual // 2)))
+            direction = "buy"     # 做空减仓 = 买
+        elif action == "CLOSE":
+            vol = actual
+            direction = "buy"     # 做空平仓 = 买
+        else:
+            return
+
+        if vol <= 0:
+            return
+
+        if direction == "sell":
+            acct = self._get_account()
+            price = kline.close
+            if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
+                self.output("[保证金不足] TWAP取消")
+                feishu("error", p.instrument_id, f"**保证金不足** TWAP {action} {vol}手")
+                return
+
+        self._twap.submit(action, vol, direction, self._pending_reason, p.instrument_id)
+        self.output(f"[TWAP提交] {action} {vol}手 {direction}")
+        feishu("info", p.instrument_id,
+               f"**TWAP启动** {action}\n目标: {vol}手 {direction}\n窗口: 第2-11分钟\n逻辑: {self._pending_reason}")
 
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
@@ -700,7 +806,7 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         labels = {
             "CLOSE": "信号平仓", "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
             "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断", "DAILY_STOP": "单日止损",
-            "FLATTEN": "盘前清仓",
+            "FLATTEN": "即将收盘清仓",
         }
         label = labels.get(action, action)
         p = self.params_map
@@ -719,7 +825,7 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
             self._om.on_send(oid, actual, price)
         # PnL for short: avg_price - price
         pnl_pct = (self.avg_price - price) / self.avg_price * 100 if self.avg_price > 0 else 0
-        abs_pnl = self._perf.on_close(self.avg_price, price, actual)
+        abs_pnl = self._perf.on_close(self.avg_price, price, actual, direction="short")
         self.state_map.last_action = f"{label} {pnl_pct:+.2f}%"
         self._rec(label, actual, "买", price, actual, 0)
         feishu(action.lower(), p.instrument_id,
@@ -825,15 +931,38 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         super().on_trade(trade, log=True)
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
-        slip = self._slip.on_fill(
-            trade.price, trade.volume,
-            "buy" if "买" in str(trade.direction) else "sell",
-        )
+
+        direction = "buy" if "买" in str(trade.direction) else "sell"
+        slip = self._slip.on_fill(trade.price, trade.volume, direction)
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
-        self.state_map.net_pos = self.get_position(
-            self.params_map.instrument_id
-        ).net_position
+
+        # TWAP成交回报
+        if self._twap.is_active:
+            self._twap.on_fill(trade.volume, trade.price)
+            if not self._twap.is_active:
+                feishu("info", self.params_map.instrument_id,
+                       f"**TWAP完成** {self._twap.action}\n成交: {self._twap.progress} VWAP={self._twap.vwap:.1f}")
+
+        # 用实际成交价更新avg_price (做空)
+        pos = self.get_position(self.params_map.instrument_id)
+        actual = abs(pos.net_position) if pos else 0
+        if direction == "sell" and actual > 0:
+            old_pos = max(0, actual - trade.volume)
+            if old_pos > 0 and self.avg_price > 0:
+                self.avg_price = (self.avg_price * old_pos + trade.price * trade.volume) / actual
+            else:
+                self.avg_price = trade.price
+            if hasattr(self, 'trough_price'):
+                if trade.price < self.trough_price or self.trough_price == 0:
+                    self.trough_price = trade.price
+        elif direction == "buy" and actual <= 0:
+            self.avg_price = 0.0
+            if hasattr(self, 'trough_price'):
+                self.trough_price = 0.0
+
+        self.state_map.net_pos = pos.net_position if pos else 0  # 做空显示原始负值
+        self._save()
         self.update_status_bar()
 
     def on_order(self, order: OrderData):
@@ -843,6 +972,7 @@ class I_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         super().on_order_cancel(order)
         self.order_id.discard(order.order_id)
         self._om.on_cancel(order.order_id)
+        self._twap.on_cancel(order.order_id, order.volume)
 
     def on_error(self, error):
         self.output(f"[错误] {error}")

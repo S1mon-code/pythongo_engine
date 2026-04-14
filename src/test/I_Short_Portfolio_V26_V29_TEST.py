@@ -228,11 +228,11 @@ class Params(BaseParams):
     exchange: str = Field(default="DCE", title="交易所")
     instrument_id: str = Field(default="i2609", title="合约")
     max_position: int = Field(default=10, title="最大手数")
-    capital: float = Field(default=10_000_000, title="资金")
+    capital: float = Field(default=1_000_000, title="资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损%")
     trailing_pct: float = Field(default=0.3, title="移动止损%")
     equity_stop_pct: float = Field(default=2.0, title="权益止损%")
-    flatten_minutes: int = Field(default=5, title="清仓提前")
+    flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=True, title="模拟盘")
 
 
@@ -401,42 +401,44 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
         self.kline_gen_h1.tick_to_kline(tick)
         self.kline_gen_h4.tick_to_kline(tick)
         p = self.params_map
+        try:
+            td = get_trading_day()
+            if td != self._current_td and self._current_td:
+                acct = self._get_account()
+                if acct:
+                    self._risk.on_day_change(acct.balance)
+                self._perf.on_day_change()
+                self._today_trades = []
+                self._current_td = td
+                self.state_map.trading_day = td
+                self._daily_review_sent = False
+                self._rollover_checked = False
+                self._save()
 
-        td = get_trading_day()
-        if td != self._current_td and self._current_td:
-            acct = self._get_account()
-            if acct:
-                self._risk.on_day_change(acct.balance)
-            self._perf.on_day_change()
-            self._today_trades = []
-            self._current_td = td
-            self.state_map.trading_day = td
-            self._daily_review_sent = False
-            self._rollover_checked = False
-            self._save()
+            if not self._current_td:
+                self._current_td = td
+                self.state_map.trading_day = td
 
-        if not self._current_td:
-            self._current_td = td
-            self.state_map.trading_day = td
+            if not self._rollover_checked:
+                level, days = check_rollover(p.instrument_id)
+                if level:
+                    feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
+                self._rollover_checked = True
 
-        if not self._rollover_checked:
-            level, days = check_rollover(p.instrument_id)
-            if level:
-                feishu("rollover", p.instrument_id, f"**换月**: 距交割月{days}天")
-            self._rollover_checked = True
+            for atype, msg in self._hb.check(p.instrument_id):
+                if atype == "no_tick":
+                    feishu("no_tick", p.instrument_id, msg)
 
-        for atype, msg in self._hb.check(p.instrument_id):
-            if atype == "no_tick":
-                feishu("no_tick", p.instrument_id, msg)
+            self.state_map.session = self._guard.get_status()
 
-        self.state_map.session = self._guard.get_status()
-
-        now = datetime.now()
-        if (not self._daily_review_sent
-                and now.hour == DAILY_REVIEW_HOUR
-                and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
-            self._send_review()
-            self._daily_review_sent = True
+            now = datetime.now()
+            if (not self._daily_review_sent
+                    and now.hour == DAILY_REVIEW_HOUR
+                    and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
+                self._send_review()
+                self._daily_review_sent = True
+        except Exception as e:
+            self.output(f"[on_tick异常] {type(e).__name__}: {e}")
 
     # ══════════════════════════════════════════════════════════════════════
     #  H1 K线回调 (V26 — updates signal only, does NOT trigger trades)
@@ -718,7 +720,7 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
                 self.order_ids.add(oid)
                 self._om.on_send(oid, abs(diff), price)
             if target == 0:
-                self._perf.on_close(self.avg_price, price, current)
+                self._perf.on_close(self.avg_price, price, current, direction="short")
                 self.avg_price = 0.0
                 self.trough_price = 0.0
 
@@ -789,6 +791,19 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
         self._om.on_fill(trade.order_id)
         self._slip.on_fill(trade.price, trade.volume,
                            "buy" if "买" in str(trade.direction) else "sell")
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        actual = abs(pos.net_position) if pos else 0
+        direction = "buy" if "买" in str(trade.direction) else "sell"
+        if direction == "sell" and actual > 0:
+            old_pos = max(0, actual - trade.volume)
+            if old_pos > 0 and self.avg_price > 0:
+                self.avg_price = (self.avg_price * old_pos + trade.price * trade.volume) / actual
+            else:
+                self.avg_price = trade.price
+        elif direction == "buy" and actual == 0:
+            self.avg_price = 0.0
+            self.trough_price = 0.0
         self.state_map.net_pos = self.get_position(
             self.params_map.instrument_id).net_position
         self.update_status_bar()

@@ -29,8 +29,8 @@ def save_state(data, name="default"):
             except OSError:
                 pass
         os.replace(tmp, path)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[persistence] 保存失败 {name}: {type(e).__name__}: {e}")
 
 
 def load_state(name="default"):

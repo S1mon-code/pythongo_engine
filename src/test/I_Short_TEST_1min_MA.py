@@ -36,7 +36,7 @@ class Params(BaseParams):
     instrument_id: str = Field(default="i2609", title="合约")
     kline_style: str = Field(default="M1", title="K线周期")
     max_position: int = Field(default=10, title="最大手数")
-    flatten_minutes: int = Field(default=5, title="清仓提前")
+    flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=True, title="模拟盘")
 
 

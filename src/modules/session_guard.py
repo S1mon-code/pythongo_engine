@@ -1,7 +1,8 @@
 """
 交易时段守卫模块
 
-控制策略在交易时段内运行，并在收盘前自动触发清仓信号。
+判断当前是否在交易时段内，并提供"即将收盘"状态提示。
+盘前清仓功能已全局禁用，should_trade()不再受flatten zone影响。
 
 使用示例::
 
@@ -9,10 +10,8 @@
     guard = SessionGuard("i2609", flatten_minutes=5)
 
     # In callback:
-    if guard.should_flatten():
-        # close all positions
-    elif guard.should_trade():
-        # normal signal logic
+    if guard.should_trade():
+        # normal signal logic (交易时段内，包括收盘前)
     else:
         # outside trading hours, skip
 """
@@ -23,7 +22,7 @@ from modules.contract_info import get_sessions
 
 
 class SessionGuard:
-    """交易时段守卫，判断当前是否允许交易以及是否需要盘前清仓。"""
+    """交易时段守卫，判断当前是否在交易时段内并提供收盘提示。"""
 
     def __init__(self, instrument_id: str, flatten_minutes: int = 5, sim_24h: bool = False):
         """

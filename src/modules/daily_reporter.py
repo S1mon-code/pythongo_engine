@@ -14,6 +14,7 @@
 import time
 from datetime import datetime
 
+import requests
 from pythongo.base import BaseParams, BaseState, Field
 from pythongo.classdef import KLineData, OrderData, TickData, TradeData
 from pythongo.ui import BaseStrategy
@@ -113,48 +114,50 @@ class DailyReporter(BaseStrategy):
     def on_tick(self, tick: TickData):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
+        try:
+            # 交易日切换
+            td = get_trading_day()
+            if td != self._current_td and self._current_td:
+                acct = self._get_account()
+                if acct:
+                    self._daily_start_eq = acct.balance
+                self._current_td = td
+                self.state_map.trading_day = td
+                self._review_sent = False
+                self._morning_sent = False
+            if not self._current_td:
+                self._current_td = td
+                self.state_map.trading_day = td
 
-        # 交易日切换
-        td = get_trading_day()
-        if td != self._current_td and self._current_td:
+            # 更新State面板
             acct = self._get_account()
             if acct:
-                self._daily_start_eq = acct.balance
-            self._current_td = td
-            self.state_map.trading_day = td
-            self._review_sent = False
-            self._morning_sent = False
-        if not self._current_td:
-            self._current_td = td
-            self.state_map.trading_day = td
+                self.state_map.equity = round(acct.balance, 0)
+                self.state_map.available = round(acct.available, 0)
+                self.state_map.pos_profit = round(acct.position_profit, 0)
 
-        # 更新State面板
-        acct = self._get_account()
-        if acct:
-            self.state_map.equity = round(acct.balance, 0)
-            self.state_map.available = round(acct.available, 0)
-            self.state_map.pos_profit = round(acct.position_profit, 0)
+            # 更新持仓汇总
+            positions = self._scan_positions()
+            total = sum(abs(p['lots']) for p in positions if p['lots'] != 0)
+            self.state_map.total_pos = f"{total}手/{len([p for p in positions if p['lots'] != 0])}品种"
 
-        # 更新持仓汇总
-        positions = self._scan_positions()
-        total = sum(abs(p['lots']) for p in positions if p['lots'] != 0)
-        self.state_map.total_pos = f"{total}手/{len([p for p in positions if p['lots'] != 0])}品种"
+            now = datetime.now()
 
-        now = datetime.now()
+            # 15:15 日终汇总
+            if (not self._review_sent
+                    and now.hour == REVIEW_HOUR
+                    and REVIEW_MINUTE <= now.minute < REVIEW_MINUTE + 5):
+                self._send_daily_summary()
+                self._review_sent = True
 
-        # 15:15 日终汇总
-        if (not self._review_sent
-                and now.hour == REVIEW_HOUR
-                and REVIEW_MINUTE <= now.minute < REVIEW_MINUTE + 5):
-            self._send_daily_summary()
-            self._review_sent = True
-
-        # 21:05 开盘状态
-        if (not self._morning_sent
-                and now.hour == MORNING_HOUR
-                and MORNING_MINUTE <= now.minute < MORNING_MINUTE + 5):
-            self._send_morning_report()
-            self._morning_sent = True
+            # 21:05 开盘状态
+            if (not self._morning_sent
+                    and now.hour == MORNING_HOUR
+                    and MORNING_MINUTE <= now.minute < MORNING_MINUTE + 5):
+                self._send_morning_report()
+                self._morning_sent = True
+        except Exception as e:
+            self.output(f"[on_tick异常] {type(e).__name__}: {e}")
 
     def callback(self, kline: KLineData):
         pass  # 不处理K线
@@ -192,7 +195,6 @@ class DailyReporter(BaseStrategy):
 
     def _send_daily_summary(self):
         """15:05 全账户日终汇总 (column_set表格)."""
-        import requests
         acct = self._get_account()
         if not acct:
             return

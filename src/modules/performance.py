@@ -25,10 +25,18 @@ class PerformanceTracker:
         self._daily_trades = []
         self._daily_pnl = 0.0
 
-    def on_close(self, entry_px, exit_px, lots):
-        """记录平仓. 返回绝对盈亏."""
-        pnl = (exit_px - entry_px) * lots * self._multiplier
-        pct = ((exit_px / entry_px) - 1) * 100 if entry_px > 0 else 0
+    def on_close(self, entry_px, exit_px, lots, direction: str = "long"):
+        """记录平仓. 返回绝对盈亏.
+
+        Args:
+            direction: "long" 多单平仓 (exit > entry 为盈), "short" 空单平仓 (entry > exit 为盈)
+        """
+        if direction == "short":
+            pnl = (entry_px - exit_px) * lots * self._multiplier
+            pct = (entry_px / exit_px - 1) * 100 if exit_px > 0 else 0
+        else:
+            pnl = (exit_px - entry_px) * lots * self._multiplier
+            pct = (exit_px / entry_px - 1) * 100 if entry_px > 0 else 0
         trade = {
             "time": time.strftime("%m-%d %H:%M"),
             "entry": round(entry_px, 1), "exit": round(exit_px, 1),

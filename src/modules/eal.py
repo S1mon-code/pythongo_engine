@@ -232,6 +232,7 @@ class EALManager:
                 batch, batch_idx, close, volume,
                 score=score,
                 timeout=(is_last_chance and score < self.config.execution_score_threshold),
+                actual_lots=actual_lots,
             )
 
         # 窗口结束不强制 → 超时成交
@@ -306,9 +307,20 @@ class EALManager:
         return batches
 
     def _fill_batch(self, batch, batch_idx, price, volume,
-                    score=0.0, timeout=False):
-        """标记批次成交并更新统计."""
-        batch.filled = True
+                    score=0.0, timeout=False, actual_lots=None):
+        """标记批次成交并更新统计.
+
+        Args:
+            actual_lots: 参与率限制后的实际成交手数。若为 None，则使用 batch.lots 全量成交。
+                         若 actual_lots < batch.lots，批次保持未成交状态，剩余手数留待下一 bar。
+        """
+        fill_lots = actual_lots if actual_lots is not None else batch.lots
+        partial = fill_lots < batch.lots
+
+        if partial:
+            batch.lots -= fill_lots   # 剩余手数留到下一 bar
+        else:
+            batch.filled = True       # 全量成交，批次完成
         batch.fill_price = price
         batch.fill_bar = self._order.bars_elapsed
         batch.fill_time = time.strftime("%H:%M:%S")
@@ -318,18 +330,18 @@ class EALManager:
         order = self._order
 
         old_total = order.total_filled
-        new_total = old_total + batch.lots
+        new_total = old_total + fill_lots
         if new_total > 0:
             order.vwap_fill = (
-                (order.vwap_fill * old_total + price * batch.lots) / new_total
+                (order.vwap_fill * old_total + price * fill_lots) / new_total
             )
         order.total_filled = new_total
 
-        if all(b.filled for b in order.batches):
+        if not partial and all(b.filled for b in order.batches):
             order.completed = True
 
         return {
-            "volume": batch.lots,
+            "volume": fill_lots,
             "direction": order.direction,
             "batch_idx": batch_idx,
             "score": score,
