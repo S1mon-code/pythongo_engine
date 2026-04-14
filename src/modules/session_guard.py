@@ -42,12 +42,12 @@ class SessionGuard:
     # ------------------------------------------------------------------
 
     def should_trade(self) -> bool:
-        """当前时刻是否在交易时段内且不在清仓区间。"""
+        """当前时刻是否在交易时段内（盘前清仓已全局禁用，不再阻止信号生成）。"""
         if self._sim_24h:
             return True
         if self._is_weekend():
             return False
-        return self._in_session() and not self._in_flatten_zone()
+        return self._in_session()
 
     def should_flatten(self) -> bool:
         """当前时刻是否处于清仓区间（在某节收盘前 flatten_minutes 分钟内且仍在时段内）。"""
@@ -64,7 +64,7 @@ class SessionGuard:
         if self._is_weekend() or not self._in_session():
             return "非交易时段"
         if self._in_flatten_zone():
-            return "盘前清仓"
+            return "即将收盘"
         return "交易中"
 
     # ------------------------------------------------------------------

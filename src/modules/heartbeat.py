@@ -21,14 +21,25 @@ class HeartbeatMonitor:
         self._interval = interval_min * 60
         self._last_hb = 0.0
         self._last_tick = 0.0
+        self._was_in_session = False
 
     def check(self, symbol):
         """每tick调用. 返回 [(alert_type, message), ...]"""
         now = time.time()
         alerts = []
+        in_session = self._in_session()
 
-        if not self._in_session():
+        if not in_session:
+            self._last_tick = 0.0
+            self._last_hb = 0.0
+            self._was_in_session = False
+            return alerts
+
+        # 新session第一个tick: 重置计时器，不报假警
+        if not self._was_in_session:
+            self._was_in_session = True
             self._last_tick = now
+            self._last_hb = 0.0
             return alerts
 
         # tick中断检测
@@ -48,4 +59,14 @@ class HeartbeatMonitor:
 
     def _in_session(self):
         m = datetime.now().hour * 60 + datetime.now().minute
-        return any(sh * 60 + sm <= m < eh * 60 + em for (sh, sm), (eh, em) in self._sessions)
+        for (sh, sm), (eh, em) in self._sessions:
+            start = sh * 60 + sm
+            end = eh * 60 + em
+            if start <= end:
+                if start <= m < end:
+                    return True
+            else:
+                # 跨午夜: 如 21:00-01:00
+                if m >= start or m < end:
+                    return True
+        return False
