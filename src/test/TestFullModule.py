@@ -428,6 +428,13 @@ class TestFullModule(BaseStrategy):
                     f"死叉: MA{p.fast_period}={fast_ma:.1f} <= MA{p.slow_period}={slow_ma:.1f}"
                 )
 
+        # ── 当前bar立即处理pending (不等下一根bar) ──
+        if self._pending is not None:
+            signal_price = self._execute(kline, self._pending)
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
+
         self.state_map.pending = self._pending or "---"
         self.state_map.slippage = self._slip.format_report()
         self.state_map.perf = self._perf.format_short()

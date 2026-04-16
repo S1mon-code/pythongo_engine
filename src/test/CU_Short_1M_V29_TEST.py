@@ -422,16 +422,10 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
                 self._pending = "HARD_STOP"
                 self._pending_reason = f"硬止损(空) close={close:.1f}"
                 self.output(f"[HARD_STOP] {self._pending_reason}")
-                self._push_widget(kline, signal_price)
-                self.update_status_bar()
-                return
             if self.trough_price > 0 and close >= self.trough_price * (1 + p.trailing_pct / 100):
                 self._pending = "TRAIL_STOP"
                 self._pending_reason = f"移动止损(空) close={close:.1f}"
                 self.output(f"[TRAIL_STOP] {self._pending_reason}")
-                self._push_widget(kline, signal_price)
-                self.update_status_bar()
-                return
             action, reason = self._risk.check(
                 close=close, avg_price=self.avg_price, peak_price=self.avg_price,
                 pos_profit=pos_profit, net_pos=net_pos,
@@ -460,6 +454,13 @@ class CU_Short_1M_V29_TEST(BaseStrategy):
                 self._pending = "REDUCE"
             self._pending_target = target
             self._pending_reason = f"signal={raw:.2f} forecast={forecast:.1f} optimal={optimal} target={target}"
+
+        # ── 当前bar立即处理pending (不等下一根bar) ──
+        if self._pending is not None:
+            signal_price = self._execute(kline, self._pending)
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
 
         self.state_map.pending = self._pending or "---"
         self.state_map.slippage = self._slip.format_report()

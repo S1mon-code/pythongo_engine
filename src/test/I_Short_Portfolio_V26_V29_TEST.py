@@ -600,8 +600,6 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
                     f"硬止损(空) close={close:.1f} >= "
                     f"avg*(1+{p.hard_stop_pct}%)={self.avg_price * (1 + p.hard_stop_pct / 100):.1f}"
                 )
-                self._push_widget(kline)
-                return
 
             # Trail stop: close >= trough_price * (1 + trailing_pct/100)
             if self.trough_price > 0 and close >= self.trough_price * (1 + p.trailing_pct / 100):
@@ -611,8 +609,6 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
                     f"移动止损(空) close={close:.1f} >= "
                     f"trough*(1+{p.trailing_pct}%)={self.trough_price * (1 + p.trailing_pct / 100):.1f}"
                 )
-                self._push_widget(kline)
-                return
 
             # Equity/Portfolio stops (direction-agnostic)
             action, reason = self._risk.check(
@@ -625,8 +621,6 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
                 self._pending = action
                 self._pending_target = 0
                 self._pending_reason = reason
-                self._push_widget(kline)
-                return
             elif action == "REDUCE":
                 target = max(0, current // 2)
                 self._pending_reason = reason
@@ -640,8 +634,6 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
                 self._pending = "CLOSE"
                 self._pending_target = 0
                 self._pending_reason = "Chandelier Exit (Short)"
-                self._push_widget(kline)
-                return
 
         # ── 正常信号 → pending ──
         if target != current:
@@ -661,6 +653,11 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
             )
 
         self.state_map.target_lots = target
+
+        # ── 当前bar立即处理pending (不等下一根bar) ──
+        if self._pending is not None:
+            signal_price = self._execute(kline)
+
         self.state_map.pending = self._pending or "---"
         self._push_widget(kline, signal_price)
         self.update_status_bar()

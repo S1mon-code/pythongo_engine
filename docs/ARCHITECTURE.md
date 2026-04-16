@@ -74,8 +74,11 @@ pos = self.get_position(instrument_id).net_position
 ```
 
 ### 关键规则
-- **Next-bar规则**: 信号在当前bar产生，存入`self._pending`，下一根bar开头执行
-- **执行后return**: 执行pending后本bar直接return，避免持仓未更新导致重复信号
+- **Same-bar执行 (2026-04-14修复)**: 信号在当前bar产生后**立即提交TWAP执行**，不等下一根bar。
+  - 旧行为: 信号存入`_pending`→下一根bar的callback开头才处理→多等一整根bar（H1=1小时延迟）
+  - 新行为: `_on_bar`末尾检查`_pending`→止损立即`_execute()`/正常信号立即`_submit_twap()`→TWAP在当前bar的tick流中分批成交
+  - 和QBase回测一致: Bar N收盘出信号→Bar N+1期间执行
+  - `_on_bar`顶部仍保留`_pending`处理逻辑作为安全网（正常情况下不会触发）
 - **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)`
 - **order_id追踪**: 用set追踪委托ID，在on_trade/on_order_cancel中清理
 - **market=True**: 市价单，price参数仅用于显示

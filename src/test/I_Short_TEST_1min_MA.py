@@ -232,6 +232,14 @@ class I_Short_TEST_1min_MA(BaseStrategy):
             )
 
         self.state_map.target_lots = target
+
+        # ── 当前bar立即处理pending (不等下一根bar) ──
+        if self._pending is not None:
+            self._execute(kline)
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
+
         self.state_map.pending = self._pending or "---"
         self._push_widget(kline)
         self.update_status_bar()

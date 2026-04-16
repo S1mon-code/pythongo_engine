@@ -577,10 +577,6 @@ class I_Long_4H_V7_EMA_RSI_Filter(BaseStrategy):
                 self._pending = action
                 self._pending_reason = reason
                 self.output(f"[{action}] {reason}")
-                self.state_map.pending = action
-                self._push_widget(kline, signal_price)
-                self.update_status_bar()
-                return
             elif action == "REDUCE":
                 target = max(0, net_pos // 2)
                 self._pending_reason = reason
@@ -612,6 +608,24 @@ class I_Long_4H_V7_EMA_RSI_Filter(BaseStrategy):
                 f"signal={raw:.2f} forecast={forecast:.1f} "
                 f"optimal={optimal} target={target}"
             )
+
+        # ── 当前bar立即处理pending (不等下一根bar) ──
+        if self._pending is not None:
+            action = self._pending
+            if action in IMMEDIATE_ACTIONS:
+                if self._twap.is_active:
+                    self._twap.cancel()
+                    for oid in list(self.order_id):
+                        self.cancel_order(oid)
+                    self.output(f"[TWAP取消+撤单] 止损优先: {action}")
+                signal_price = self._execute(kline, action)
+            elif not self._twap.is_active:
+                self._submit_twap(kline, action)
+            else:
+                self.output(f"[TWAP进行中] 忽略pending {action}")
+            self._pending = None
+            self._pending_target = None
+            self._pending_reason = ""
 
         self.state_map.pending = self._pending or "---"
         self.state_map.slippage = self._slip.format_report()
