@@ -702,6 +702,11 @@ class CU_Short_Portfolio_V26_V29(BaseStrategy):
         pos = self.get_position(p.instrument_id)
         net_pos = abs(pos.net_position) if pos else 0
         target = apply_buffer(optimal, net_pos)
+
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and net_pos > 0:
+            target = 0
+
         self.state_map.net_pos = -net_pos
         self.state_map.target_lots = -target
 

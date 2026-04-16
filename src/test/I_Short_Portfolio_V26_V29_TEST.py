@@ -554,6 +554,11 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
         pos = self.get_position(p.instrument_id)
         current = pos.net_position if pos else 0
         target = apply_buffer(optimal, current)
+
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and current > 0:
+            target = 0
+
         self.state_map.net_pos = current
 
         # 持仓追踪 (short: track trough_price = lowest since entry)

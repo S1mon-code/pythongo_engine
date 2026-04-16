@@ -459,6 +459,10 @@ class CU_Short_Portfolio_EAL_TEST(BaseStrategy):
             forecast, atr_arr[bar_idx], close, p.capital, p.max_lots, self._multiplier, ANNUAL_FACTOR,
         ))
         target = min(apply_buffer(optimal, net_pos), p.max_lots)
+
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and net_pos > 0:
+            target = 0
         self.state_map.net_pos = -net_pos
         self.state_map.target_lots = -target
 

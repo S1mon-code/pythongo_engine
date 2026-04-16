@@ -555,6 +555,11 @@ class LC_Short_4H_V14_OI_Flow_EMA(BaseStrategy):
         current = abs(pos.net_position) if pos else 0
         target = min(round(optimal_raw), p.max_lots)
         target = apply_buffer(target, current)
+
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and current > 0:
+            target = 0
+
         self.state_map.net_pos = -current
 
         # 持仓追踪 (short: track trough — lowest price since entry)

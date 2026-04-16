@@ -724,6 +724,9 @@ class I_Short_Portfolio_V26_V29(BaseStrategy):
         net_pos = abs(pos.net_position) if pos else 0
         target = apply_buffer(optimal, net_pos)
         target = min(target, p.max_lots)
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and net_pos > 0:
+            target = 0
         self.state_map.net_pos = -net_pos
         self.state_map.target_lots = -target
 

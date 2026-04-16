@@ -327,6 +327,10 @@ class CU_Short_5M_V26_EAL_TEST(BaseStrategy):
         optimal = round(calc_optimal_lots(forecast, atr_arr[bar_idx], close, p.capital, p.max_lots, self._multiplier, ANNUAL_FACTOR))
         net_pos = abs(self.get_position(p.instrument_id).net_position)
         target = min(apply_buffer(optimal, net_pos), p.max_lots)
+
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and net_pos > 0:
+            target = 0
         self.state_map.net_pos = -net_pos
         self.state_map.target_lots = -target
 

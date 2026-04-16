@@ -535,6 +535,9 @@ class I_Long_4H_V20_Donchian_EMA_ATR(BaseStrategy):
         net_pos = self.get_position(p.instrument_id).net_position
         target = apply_buffer(optimal, net_pos)
         target = min(target, p.max_lots)
+        # forecast=0 → 强制退出 (信号消失不走buffer)
+        if forecast == 0 and net_pos > 0:
+            target = 0
         self.state_map.net_pos = net_pos
         self.state_map.target_lots = target
 
