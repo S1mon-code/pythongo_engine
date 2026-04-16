@@ -4,7 +4,9 @@
 ================================================================================
 
   QBase_v3 策略: i_long_v8_donchian_adx_filter
+  研究来源: research/long/I/1h/v8_+52.40%
   信号: Donchian通道突破 + ADX趋势强度确认(>22) + PDI>MDI方向确认 → [0, 1]
+  执行: VWAP — 买低于VWAP、卖高于VWAP, 匹配QBase pipeline/vwap_executor.py
   止损: Chandelier Exit + RiskManager(移动/硬/权益止损 + Portfolio Stops)
   仓位: Vol Targeting + Carver 10% buffer
   部署: modules/ → pyStrategy/modules/, 本文件 → self_strategy/
@@ -21,7 +23,7 @@ from pythongo.classdef import KLineData, OrderData, TickData, TradeData
 from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
-# ── 模块导入 (和TestFullModule完全一致) ──
+# ── 模块导入 ──
 from modules.contract_info import get_multiplier, get_tick_size
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
@@ -34,7 +36,11 @@ from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
-from modules.twap import TWAPExecutor, IMMEDIATE_ACTIONS
+
+# 止损动作集 (止损立即执行, 不走VWAP)
+IMMEDIATE_ACTIONS = frozenset({
+    "HARD_STOP", "TRAIL_STOP", "EQUITY_STOP", "CIRCUIT", "DAILY_STOP", "FLATTEN",
+})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -58,6 +64,10 @@ CHANDELIER_MULT = 2.58
 FORECAST_SCALAR = 10.0
 FORECAST_CAP = 20.0
 ANNUAL_FACTOR = 252 * 8            # H1: AL有夜盘, ~8 bars/day
+
+# VWAP执行参数
+VWAP_MIN_WAIT_SEC = 30             # 两次下单最小间隔(秒)
+VWAP_FORCE_MINUTE = 50             # 每小时第50分钟起强制成交
 
 # 日报时间
 DAILY_REVIEW_HOUR = 15
@@ -101,19 +111,14 @@ def _donchian(highs, lows, period=20):
 
 
 def _adx_with_di(highs, lows, closes, period=14):
-    """ADX with directional indicators — returns (adx, plus_di, minus_di).
-
-    Wilder smoothing. First ~2*period values are np.nan.
-    """
+    """ADX with directional indicators — returns (adx, plus_di, minus_di)."""
     n = len(highs)
     nans = np.full(n, np.nan)
     if n == 0 or n < period + 1:
         return nans.copy(), nans.copy(), nans.copy()
 
-    # raw +DM, -DM, TR
     up_move = highs[1:] - highs[:-1]
     down_move = lows[:-1] - lows[1:]
-
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
@@ -122,7 +127,6 @@ def _adx_with_di(highs, lows, closes, period=14):
     low_close = np.abs(lows[1:] - closes[:-1])
     tr = np.maximum(high_low, np.maximum(high_close, low_close))
 
-    # Wilder smoothing
     def _wilder(values, p):
         out = np.full(len(values), np.nan)
         if len(values) < p:
@@ -136,7 +140,6 @@ def _adx_with_di(highs, lows, closes, period=14):
     sm_minus = _wilder(minus_dm, period)
     sm_tr = _wilder(tr, period)
 
-    # +DI, -DI
     plus_di = np.full(n, np.nan)
     minus_di = np.full(n, np.nan)
     valid = sm_tr > 0
@@ -144,25 +147,21 @@ def _adx_with_di(highs, lows, closes, period=14):
     plus_di[idx + 1] = 100.0 * sm_plus[idx] / sm_tr[idx]
     minus_di[idx + 1] = 100.0 * sm_minus[idx] / sm_tr[idx]
 
-    # DX
     di_sum = plus_di + minus_di
     di_diff = np.abs(plus_di - minus_di)
     dx = np.full(n, np.nan)
     nonzero = di_sum > 0
     dx[nonzero] = 100.0 * di_diff[nonzero] / di_sum[nonzero]
 
-    # ADX = Wilder smooth of DX
     adx_out = np.full(n, np.nan)
     first_valid = period
     dx_valid = dx[first_valid:]
     if len(dx_valid) < period:
         return adx_out, plus_di, minus_di
-
     adx_start = first_valid + period - 1
     adx_out[adx_start] = np.mean(dx_valid[:period])
     for i in range(adx_start + 1, n):
         adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i]) / period
-
     return adx_out, plus_di, minus_di
 
 
@@ -187,19 +186,13 @@ def generate_signal(closes, highs, lows, bar_idx):
 
     if any(np.isnan(x) for x in (upper, mid, a, pdi, mdi)):
         return 0.0
-
-    # ADX filter: trending and bullish
     if a < ADX_THRESHOLD or pdi <= mdi:
         return 0.0
-
-    # Price above Donchian midline
     if close <= mid:
         return 0.0
-
     width = upper - mid
     if width <= 0:
         return 0.0
-
     penetration = (close - mid) / width
     return float(np.clip(penetration * SIGNAL_SCALE, 0.0, 1.0))
 
@@ -227,7 +220,7 @@ class Params(BaseParams):
     exchange: str = Field(default="SHFE", title="交易所代码")
     instrument_id: str = Field(default="al2605", title="合约代码")
     kline_style: str = Field(default="H1", title="K线周期")
-    max_lots: int = Field(default=2, title="最大持仓")
+    max_lots: int = Field(default=10, title="最大持仓")
     capital: float = Field(default=1_000_000, title="配置资金")
     hard_stop_pct: float = Field(default=0.5, title="硬止损(%)")
     trailing_pct: float = Field(default=0.3, title="移动止损(%)")
@@ -254,6 +247,7 @@ class State(BaseState):
     last_action: str = Field(default="---", title="上次操作")
     slippage: str = Field(default="---", title="滑点")
     perf: str = Field(default="---", title="绩效")
+    vwap: str = Field(default="---", title="VWAP执行")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -261,7 +255,7 @@ class State(BaseState):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
-    """电解铝 H1做多 — Donchian Breakout + ADX Trend Filter"""
+    """电解铝 H1做多 — Donchian Breakout + ADX + VWAP执行"""
 
     def __init__(self):
         super().__init__()
@@ -277,6 +271,19 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._pending_reason = ""
         self.order_id = set()
 
+        # VWAP执行状态 (替代TWAP, 匹配QBase vwap_executor.py)
+        self._vwap_active = False       # 是否有正在执行的VWAP订单
+        self._vwap_remaining = 0        # 剩余手数 (正=买, 负=卖)
+        self._vwap_direction = ""       # "buy" or "sell"
+        self._vwap_action = ""          # OPEN/ADD/REDUCE/CLOSE
+        self._vwap_reason = ""
+        self._vwap_cum_pv = 0.0         # 当前执行窗口: 累计 price * delta_vol
+        self._vwap_cum_vol = 0.0        # 当前执行窗口: 累计 delta_vol
+        self._vwap_prev_vol = 0         # 上一tick的累计成交量 (用于算delta)
+        self._vwap_fill_pv = 0.0        # 成交追踪: 累计 fill_price * fill_lots
+        self._vwap_fill_lots = 0        # 成交追踪: 累计 fill_lots
+        self._vwap_last_send = 0.0      # 限流: 上次发单时间戳
+
         # 权益追踪
         self._investor_id = ""
         self._risk = None
@@ -290,7 +297,6 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._slip = None
         self._hb = None
         self._om = OrderMonitor()
-        self._twap = TWAPExecutor()
         self._perf = None
         self._multiplier = 5
 
@@ -370,7 +376,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         )
         feishu("start", p.instrument_id,
                f"**策略启动** {STRATEGY_NAME}\n合约: {p.instrument_id}\n"
-               f"乘数: {self._multiplier}\n持仓: {actual}手")
+               f"乘数: {self._multiplier}\n持仓: {actual}手\n执行: VWAP")
 
     def on_stop(self):
         self._save()
@@ -388,9 +394,9 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.kline_generator.tick_to_kline(tick)
 
         try:
-            self._on_tick_twap(tick)
+            self._on_tick_vwap(tick)
         except Exception as e:
-            self.output(f"[TWAP异常] {type(e).__name__}: {e}")
+            self.output(f"[VWAP异常] {type(e).__name__}: {e}")
 
         try:
             self._on_tick_aux(tick)
@@ -399,32 +405,162 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             feishu("error", self.params_map.instrument_id,
                    f"**on_tick异常**\n{type(e).__name__}: {e}")
 
-    def _on_tick_twap(self, tick: TickData):
-        """TWAP分批执行."""
-        if not self._twap.is_active:
+    def _on_tick_vwap(self, tick: TickData):
+        """VWAP执行: 买低于VWAP, 卖高于VWAP, 匹配QBase vwap_executor."""
+        if not self._vwap_active:
             return
-        batch = self._twap.check()
-        if batch is None:
-            return
-        p = self.params_map
+
         price = tick.last_price
-        direction = self._twap.direction
-        agg_price = self._aggressive_price(price, direction)
-        if direction == "buy":
-            oid = self.send_order(
-                exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=batch, price=agg_price, order_direction="buy",
-            )
+        now = time.time()
+
+        # ── 更新running VWAP (从tick累计成交量的delta计算) ──
+        cur_vol = tick.volume
+        if self._vwap_prev_vol == 0:
+            self._vwap_prev_vol = cur_vol
+            return
+        delta_vol = cur_vol - self._vwap_prev_vol
+        if delta_vol > 0:
+            self._vwap_cum_pv += price * delta_vol
+            self._vwap_cum_vol += delta_vol
+        self._vwap_prev_vol = cur_vol
+
+        # VWAP不够数据 (刚开始执行)
+        if self._vwap_cum_vol <= 0:
+            return
+
+        vwap = self._vwap_cum_pv / self._vwap_cum_vol
+
+        # ── 检查是否完成 ──
+        if self._vwap_remaining == 0:
+            self._vwap_complete()
+            return
+
+        # ── 限流: 两次下单间隔至少 VWAP_MIN_WAIT_SEC ──
+        if now - self._vwap_last_send < VWAP_MIN_WAIT_SEC:
+            return
+
+        # ── 强制成交: 每小时第50分钟起 ──
+        force = datetime.now().minute >= VWAP_FORCE_MINUTE
+
+        # ── 下单量: 剩余的一半, 最少1手 ──
+        size = max(1, abs(self._vwap_remaining) // 2)
+        p = self.params_map
+
+        if self._vwap_remaining > 0:
+            # 需要买: 价格低于VWAP时买, 或强制成交
+            if price < vwap or force:
+                batch = min(self._vwap_remaining, size)
+                buy_price = self._aggressive_price(price, "buy")
+                oid = self.send_order(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=batch, price=buy_price, order_direction="buy",
+                )
+                if oid is not None:
+                    self.order_id.add(oid)
+                    self._om.on_send(oid, batch, price)
+                    self._vwap_remaining -= batch
+                    self._vwap_last_send = now
+                self.output(
+                    f"[VWAP] buy {batch}手 @ {price:.1f} "
+                    f"vwap={vwap:.1f} remain={self._vwap_remaining}"
+                    f"{' (FORCE)' if force else ''}"
+                )
+
+        elif self._vwap_remaining < 0:
+            # 需要卖: 价格高于VWAP时卖, 或强制成交
+            batch = min(abs(self._vwap_remaining), size)
+            if price > vwap or force:
+                sell_price = self._aggressive_price(price, "sell")
+                oid = self.auto_close_position(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=batch, price=sell_price, order_direction="sell",
+                )
+                if oid is not None:
+                    self.order_id.add(oid)
+                    self._om.on_send(oid, batch, price)
+                    self._vwap_remaining += batch
+                    self._vwap_last_send = now
+                self.output(
+                    f"[VWAP] sell {batch}手 @ {price:.1f} "
+                    f"vwap={vwap:.1f} remain={self._vwap_remaining}"
+                    f"{' (FORCE)' if force else ''}"
+                )
+
+        # 更新UI
+        exec_vwap = self._vwap_fill_pv / self._vwap_fill_lots if self._vwap_fill_lots > 0 else 0
+        self.state_map.vwap = (
+            f"{self._vwap_action} "
+            f"{self._vwap_fill_lots}/{self._vwap_fill_lots + abs(self._vwap_remaining)} "
+            f"VWAP={vwap:.1f}"
+        )
+
+    def _submit_vwap(self, kline: KLineData, action: str):
+        """启动VWAP执行窗口."""
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        actual = pos.net_position if pos else 0
+
+        if action == "OPEN":
+            vol = max(1, self._pending_target or 1)
+            direction = "buy"
+        elif action == "ADD":
+            vol = max(1, (self._pending_target or (actual + 1)) - actual)
+            direction = "buy"
+        elif action == "REDUCE":
+            vol = max(1, actual - (self._pending_target or (actual // 2)))
+            direction = "sell"
+        elif action == "CLOSE":
+            vol = actual
+            direction = "sell"
         else:
-            oid = self.auto_close_position(
-                exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=batch, price=agg_price, order_direction="sell",
-            )
-        if oid is not None:
-            self.order_id.add(oid)
-            self._om.on_send(oid, batch, price)
-            self._twap.on_send(oid, batch)
-        self.output(f"[TWAP] {direction} {batch}手 @ {price:.1f} ({self._twap.progress})")
+            return
+
+        if vol <= 0:
+            return
+
+        if direction == "buy":
+            acct = self._get_account()
+            price = kline.close
+            if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
+                self.output("[保证金不足] VWAP取消")
+                feishu("error", p.instrument_id, f"**保证金不足** VWAP {action} {vol}手")
+                return
+
+        # 初始化VWAP执行状态
+        self._vwap_active = True
+        self._vwap_remaining = vol if direction == "buy" else -vol
+        self._vwap_direction = direction
+        self._vwap_action = action
+        self._vwap_reason = self._pending_reason
+        self._vwap_cum_pv = 0.0
+        self._vwap_cum_vol = 0.0
+        self._vwap_prev_vol = 0
+        self._vwap_fill_pv = 0.0
+        self._vwap_fill_lots = 0
+        self._vwap_last_send = 0.0
+
+        self.output(f"[VWAP提交] {action} {vol}手 {direction}")
+        feishu("info", p.instrument_id,
+               f"**VWAP启动** {action}\n目标: {vol}手 {direction}\n"
+               f"模式: 买<VWAP 卖>VWAP, 第50分钟起强制\n逻辑: {self._pending_reason}")
+
+    def _vwap_cancel(self):
+        """取消进行中的VWAP执行."""
+        if not self._vwap_active:
+            return
+        self.output(f"[VWAP取消] {self._vwap_action} 已成交{self._vwap_fill_lots}手")
+        self._vwap_active = False
+        self._vwap_remaining = 0
+
+    def _vwap_complete(self):
+        """VWAP执行完成."""
+        exec_vwap = self._vwap_fill_pv / self._vwap_fill_lots if self._vwap_fill_lots > 0 else 0
+        feishu("info", self.params_map.instrument_id,
+               f"**VWAP完成** {self._vwap_action}\n"
+               f"成交: {self._vwap_fill_lots}手 VWAP={exec_vwap:.1f}")
+        self.output(f"[VWAP完成] {self._vwap_action} {self._vwap_fill_lots}手 VWAP={exec_vwap:.1f}")
+        self._vwap_active = False
+        self.state_map.vwap = "---"
 
     def _on_tick_aux(self, tick: TickData):
         p = self.params_map
@@ -482,8 +618,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         signal_price = 0.0
         p = self.params_map
 
-        # 撤挂单 (TWAP进行中不撤)
-        if not self._twap.is_active:
+        # 撤挂单 (VWAP进行中不撤)
+        if not self._vwap_active:
             for oid in list(self.order_id):
                 self.cancel_order(oid)
             for oid in self._om.check_timeouts(self.cancel_order):
@@ -497,21 +633,21 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self._push_widget(kline)
             return
 
-        # 执行pending: 止损立即, 正常信号→TWAP
+        # 安全网: 处理上一根bar残留的pending
         if self._pending is not None:
             action = self._pending
             if action in IMMEDIATE_ACTIONS:
-                if self._twap.is_active:
-                    self._twap.cancel()
+                if self._vwap_active:
+                    self._vwap_cancel()
                     for oid in list(self.order_id):
                         self.cancel_order(oid)
-                    self.output(f"[TWAP取消+撤单] 止损优先: {action}")
+                    self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
-            elif self._twap.is_active:
-                self.output(f"[TWAP进行中] 忽略pending {action}")
+            elif self._vwap_active:
+                self.output(f"[VWAP进行中] 忽略pending {action}")
                 signal_price = 0.0
             else:
-                self._submit_twap(kline, action)
+                self._submit_vwap(kline, action)
                 signal_price = 0.0
             self._pending = None
             self._pending_target = None
@@ -520,11 +656,14 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.update_status_bar()
             return
 
-        # TWAP进行中 → 不产生新信号, 但仍需检查止损
-        if self._twap.is_active:
-            self.output(f"[TWAP进行中] {self._twap.progress}")
+        # VWAP进行中 → 不产生新信号, 但仍需检查止损
+        if self._vwap_active:
+            self.output(
+                f"[VWAP进行中] {self._vwap_action} "
+                f"remain={abs(self._vwap_remaining)} filled={self._vwap_fill_lots}"
+            )
 
-        # 数据准备
+        # ── 数据准备 ──
         producer = self.kline_generator.producer
         if len(producer.close) < WARMUP + 2:
             self._push_widget(kline, signal_price)
@@ -536,7 +675,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         bar_idx = len(closes) - 1
         close = float(closes[-1])
 
-        # 指标调试输出
+        # ── 指标调试输出 ──
         dc_upper, _, dc_mid = _donchian(highs, lows, DC_PERIOD)
         adx_arr, pdi_arr, mdi_arr = _adx_with_di(highs, lows, closes, ADX_PERIOD)
         dc_u = dc_upper[bar_idx] if not np.isnan(dc_upper[bar_idx]) else 0.0
@@ -549,14 +688,14 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             f"ADX={adx_v:.1f} PDI={pdi_v:.1f} MDI={mdi_v:.1f} close={close:.1f}"
         )
 
-        # 信号计算
+        # ── 信号计算 ──
         raw = generate_signal(closes, highs, lows, bar_idx)
         forecast = min(FORECAST_CAP, max(0.0, raw * FORECAST_SCALAR))
         self.state_map.signal = round(raw, 3)
         self.state_map.forecast = round(forecast, 1)
         self.output(f"[SIGNAL] raw={raw:.4f} forecast={forecast:.1f}")
 
-        # 仓位计算 (四舍五入到整数手)
+        # ── 仓位计算 ──
         atr_arr = _atr(highs, lows, closes)
         optimal_raw = calc_optimal_lots(
             forecast, atr_arr[bar_idx], close,
@@ -572,7 +711,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.state_map.net_pos = net_pos
         self.state_map.target_lots = target
 
-        # 持仓追踪 (多头: peak=最高价)
+        # ── 持仓追踪 (多头: peak=最高价) ──
         if net_pos == 0:
             self.avg_price = 0.0
             self.peak_price = 0.0
@@ -587,7 +726,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             round(self.peak_price * (1 - p.trailing_pct / 100), 1) if net_pos > 0 else 0.0
         )
 
-        # 权益
+        # ── 权益 ──
         acct = self._get_account()
         equity = pos_profit = 0.0
         if acct:
@@ -632,8 +771,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 self._pending_reason = "Chandelier Exit (Long)"
                 self.output(f"[CHANDELIER] {self._pending_reason}")
 
-        # ── 正常信号 → pending (TWAP进行中不产生新正常信号) ──
-        if self._pending is None and not self._twap.is_active and target != net_pos:
+        # ── 正常信号 → pending (VWAP进行中不产生新正常信号) ──
+        if self._pending is None and not self._vwap_active and target != net_pos:
             if net_pos == 0 and target > 0:
                 self._pending = "OPEN"
             elif target == 0 and net_pos > 0:
@@ -652,16 +791,16 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if self._pending is not None:
             action = self._pending
             if action in IMMEDIATE_ACTIONS:
-                if self._twap.is_active:
-                    self._twap.cancel()
+                if self._vwap_active:
+                    self._vwap_cancel()
                     for oid in list(self.order_id):
                         self.cancel_order(oid)
-                    self.output(f"[TWAP取消+撤单] 止损优先: {action}")
+                    self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
-            elif not self._twap.is_active:
-                self._submit_twap(kline, action)
+            elif not self._vwap_active:
+                self._submit_vwap(kline, action)
             else:
-                self.output(f"[TWAP进行中] 忽略pending {action}")
+                self.output(f"[VWAP进行中] 忽略pending {action}")
             self._pending = None
             self._pending_target = None
             self._pending_reason = ""
@@ -673,49 +812,12 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.update_status_bar()
 
     # ══════════════════════════════════════════════════════════════════════
-    #  执行 (LONG: open=buy, close=sell)
+    #  执行 (LONG: open=buy, close=sell) — 止损立即执行, 不走VWAP
     # ══════════════════════════════════════════════════════════════════════
 
     def _aggressive_price(self, price, direction):
         """SHFE实盘不支持市价卖单，用当前价限价单代替."""
         return price
-
-    def _submit_twap(self, kline: KLineData, action: str):
-        """将正常信号提交给TWAP分批执行."""
-        p = self.params_map
-        pos = self.get_position(p.instrument_id)
-        actual = pos.net_position if pos else 0
-
-        if action == "OPEN":
-            vol = max(1, self._pending_target or 1)
-            direction = "buy"
-        elif action == "ADD":
-            vol = max(1, (self._pending_target or (actual + 1)) - actual)
-            direction = "buy"
-        elif action == "REDUCE":
-            vol = max(1, actual - (self._pending_target or (actual // 2)))
-            direction = "sell"
-        elif action == "CLOSE":
-            vol = actual
-            direction = "sell"
-        else:
-            return
-
-        if vol <= 0:
-            return
-
-        if direction == "buy":
-            acct = self._get_account()
-            price = kline.close
-            if acct and price * self._multiplier * vol * 0.15 > acct.available * 0.6:
-                self.output("[保证金不足] TWAP取消")
-                feishu("error", p.instrument_id, f"**保证金不足** TWAP {action} {vol}手")
-                return
-
-        self._twap.submit(action, vol, direction, self._pending_reason, p.instrument_id)
-        self.output(f"[TWAP提交] {action} {vol}手 {direction}")
-        feishu("info", p.instrument_id,
-               f"**TWAP启动** {action}\n目标: {vol}手 {direction}\n窗口: 第2-11分钟\n逻辑: {self._pending_reason}")
 
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
@@ -938,12 +1040,14 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
 
-        if self._twap.is_active:
-            self._twap.on_fill(trade.volume, trade.price)
-            if not self._twap.is_active:
-                feishu("info", self.params_map.instrument_id,
-                       f"**TWAP完成** {self._twap.action}\n成交: {self._twap.progress} VWAP={self._twap.vwap:.1f}")
+        # VWAP成交回报
+        if self._vwap_active:
+            self._vwap_fill_pv += trade.price * trade.volume
+            self._vwap_fill_lots += trade.volume
+            if self._vwap_remaining == 0:
+                self._vwap_complete()
 
+        # 用实际成交价更新avg_price (多头)
         pos = self.get_position(self.params_map.instrument_id)
         actual = pos.net_position if pos else 0
         if direction == "buy" and actual > 0:
@@ -969,7 +1073,12 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         super().on_order_cancel(order)
         self.order_id.discard(order.order_id)
         self._om.on_cancel(order.order_id)
-        self._twap.on_cancel(order.order_id, order.volume)
+        # VWAP取消回调: 被撤的量加回remaining
+        if self._vwap_active and order.volume > 0:
+            if self._vwap_direction == "buy":
+                self._vwap_remaining += order.volume
+            else:
+                self._vwap_remaining -= order.volume
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
