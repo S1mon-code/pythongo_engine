@@ -101,14 +101,14 @@ def _atr(highs, lows, closes, period=14):
 
 
 def _donchian(highs, lows, period=20):
-    """Donchian Channel — returns (upper, lower, mid)."""
+    """Donchian Channel — returns (upper, lower, mid). Excludes current bar."""
     n = len(highs)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
     mid = np.full(n, np.nan)
-    for i in range(period - 1, n):
-        upper[i] = np.max(highs[i - period + 1:i + 1])
-        lower[i] = np.min(lows[i - period + 1:i + 1])
+    for i in range(period, n):
+        upper[i] = np.max(highs[i - period:i])
+        lower[i] = np.min(lows[i - period:i])
         mid[i] = (upper[i] + lower[i]) / 2.0
     return upper, lower, mid
 
