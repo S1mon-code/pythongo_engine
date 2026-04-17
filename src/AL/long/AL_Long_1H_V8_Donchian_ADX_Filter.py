@@ -32,11 +32,23 @@ from modules.trading_day import get_trading_day, is_new_day, DAY_START_HOUR
 from modules.risk import check_stops, RiskManager
 from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
+from modules.execution import EntryParams, EntryState, ExecAction, ScaledEntryExecutor
 from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
 from modules.pricing import AggressivePricer
+from modules.rolling_vwap import RollingVWAP
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
+
+
+def _freq_to_sec(kline_style: str) -> int:
+    """kline_style → 秒数 (bar 周期)."""
+    mapping = {
+        "M1": 60, "M3": 180, "M5": 300, "M15": 900, "M30": 1800,
+        "H1": 3600, "H2": 7200, "H4": 14400,
+        "D1": 86400, "W1": 604800,
+    }
+    return mapping.get(str(kline_style).upper(), 3600)
 
 # 止损动作集 (止损立即执行, 不走VWAP)
 IMMEDIATE_ACTIONS = frozenset({
@@ -249,6 +261,7 @@ class State(BaseState):
     slippage: str = Field(default="---", title="滑点")
     perf: str = Field(default="---", title="绩效")
     vwap: str = Field(default="---", title="VWAP执行")
+    entry_progress: str = Field(default="---", title="入场进度")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -302,6 +315,11 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._pricer: AggressivePricer | None = None   # on_start 时根据 tick_size 初始化
         self._multiplier = 5
 
+        # Scaled entry executor (2026-04-17) — 替代 VWAP 入场
+        self._rvwap: RollingVWAP | None = None
+        self._entry: ScaledEntryExecutor | None = None
+        self._rvwap_prev_vol = 0
+
     @property
     def main_indicator_data(self):
         return {"forecast": self.state_map.forecast}
@@ -319,6 +337,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         p = self.params_map
         self._multiplier = get_multiplier(p.instrument_id)
         self._pricer = AggressivePricer(tick_size=get_tick_size(p.instrument_id))
+        # Scaled entry infrastructure (2026-04-17)
+        self._rvwap = RollingVWAP(window_seconds=1800)
+        self._entry = ScaledEntryExecutor(EntryParams(bottom_lots=2))
+        self._rvwap_prev_vol = 0
 
         self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
         self._slip = SlippageTracker(p.instrument_id)
@@ -396,18 +418,34 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
 
-        # 先喂 pricer, 后续 stops/vwap/escalator 都依赖它
+        # 先喂 pricer + RollingVWAP, 后续 stops/entry 都依赖它们
         if self._pricer is not None:
             try:
                 self._pricer.update(tick)
             except Exception as e:
                 self.output(f"[pricer异常] {type(e).__name__}: {e}")
 
+        if self._rvwap is not None:
+            try:
+                self._rvwap.update(tick.last_price, tick.volume, datetime.now())
+            except Exception as e:
+                self.output(f"[rvwap异常] {type(e).__name__}: {e}")
+
         try:
             self._on_tick_stops(tick)
         except Exception as e:
             self.output(f"[stops异常] {type(e).__name__}: {e}")
 
+        # 新 Scaled Entry 驱动 (2026-04-17) — 替代旧 _on_tick_vwap
+        try:
+            self._drive_entry(tick)
+        except Exception as e:
+            self.output(f"[entry异常] {type(e).__name__}: {e}")
+            feishu("error", self.params_map.instrument_id,
+                   f"**entry 异常**\n{type(e).__name__}: {e}")
+
+        # 旧 VWAP 路径保留但不再被信号触发激活 (safety fallback);
+        # _vwap_active 永不为 True (_submit_vwap 已被短路),因此无副作用
         try:
             self._on_tick_vwap(tick)
         except Exception as e:
@@ -454,6 +492,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if action:
             self.output(f"[{action}][TICK] {reason}")
             self._exec_stop_at_tick(price, action, reason)
+            if self._entry is not None:
+                self._entry.on_stop_triggered(datetime.now())
             return
 
         # 移动止损 — 每分钟
@@ -464,6 +504,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if action:
             self.output(f"[{action}][M1] {reason}")
             self._exec_stop_at_tick(price, action, reason)
+            if self._entry is not None:
+                self._entry.on_stop_triggered(datetime.now())
 
     def _on_tick_vwap(self, tick: TickData):
         """VWAP执行: 买低于VWAP, 卖高于VWAP, 匹配QBase vwap_executor."""
@@ -680,6 +722,78 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self._daily_review_sent = True
 
     # ══════════════════════════════════════════════════════════════════════
+    #  Scaled Entry (2026-04-17) — 替代 VWAP 入场路径
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _drive_entry(self, tick: TickData) -> None:
+        """每 tick 驱动 entry executor."""
+        if self._entry is None or self._rvwap is None or self._pricer is None:
+            return
+        if not self.trading:
+            return
+        if self._guard is not None and not self._guard.should_trade():
+            return
+
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        net_pos = pos.net_position if pos else 0
+
+        actions = self._entry.on_tick(
+            now=datetime.now(),
+            last_price=tick.last_price,
+            bid1=self._pricer.bid1,
+            ask1=self._pricer.ask1,
+            tick_size=self._pricer.tick_size,
+            vwap_value=self._rvwap.value,
+            forecast=self.state_map.forecast,
+            current_position=net_pos,
+        )
+        for a in actions:
+            self._apply_entry_action(a)
+
+        # UI
+        self.state_map.entry_progress = self._entry.progress_str()
+
+    def _apply_entry_action(self, a: ExecAction) -> None:
+        """策略层执行 executor 返回的动作."""
+        p = self.params_map
+        if a.op == "submit":
+            if a.kind == "open":
+                oid = self.send_order(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=a.vol, price=a.price, order_direction=a.direction,
+                )
+            else:
+                oid = self.auto_close_position(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=a.vol, price=a.price, order_direction=a.direction,
+                )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, a.vol, a.price,
+                                 urgency="entry",
+                                 direction=a.direction, kind=a.kind)
+                self._entry.register_pending(oid, a.vol)
+                self.output(
+                    f"[ENTRY] {a.direction} {a.vol}手 @ {a.price:.1f} "
+                    f"urgency={a.urgency_score:.2f} state={self._entry.state.value}"
+                )
+            else:
+                self.output(f"[ENTRY] 发单失败 {a.direction} {a.vol}手 @ {a.price:.1f}")
+
+        elif a.op == "cancel":
+            if a.oid is not None:
+                self.cancel_order(a.oid)
+                self._entry.register_cancelled(a.oid)
+                self.order_id.discard(a.oid)
+
+        elif a.op == "cancel_all":
+            for oid in list(self._entry.pending_oids.keys()):
+                self.cancel_order(oid)
+                self._entry.register_cancelled(oid)
+                self.order_id.discard(oid)
+
+    # ══════════════════════════════════════════════════════════════════════
     #  K线回调
     # ══════════════════════════════════════════════════════════════════════
 
@@ -729,6 +843,16 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                         self.cancel_order(oid)
                     self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
+            elif action in ("OPEN", "ADD") and self._entry is not None:
+                # 2026-04-17: 残留 OPEN/ADD → 重新走 executor 入场
+                net_pos = self.get_position(self.params_map.instrument_id).net_position
+                bar_total = _freq_to_sec(self.params_map.kline_style)
+                self._entry.on_signal(
+                    target=self._pending_target or 1, direction="buy",
+                    now=datetime.now(), current_position=net_pos,
+                    forecast=self.state_map.forecast, bar_total_sec=bar_total,
+                )
+                signal_price = 0.0
             elif self._vwap_active:
                 self.output(f"[VWAP进行中] 忽略pending {action}")
                 signal_price = 0.0
@@ -880,7 +1004,21 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                         self.cancel_order(oid)
                     self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
+            elif action in ("OPEN", "ADD") and self._entry is not None:
+                # 2026-04-17: 入场路径走 ScaledEntryExecutor
+                bar_total = _freq_to_sec(self.params_map.kline_style)
+                self._entry.on_signal(
+                    target=self._pending_target or 1, direction="buy",
+                    now=datetime.now(), current_position=net_pos,
+                    forecast=forecast, bar_total_sec=bar_total,
+                )
+                feishu("info", self.params_map.instrument_id,
+                       f"**ENTRY 启动** {action}\n"
+                       f"目标: {self._pending_target}手 buy (delta 以持仓为准)\n"
+                       f"逻辑: {self._pending_reason}")
+                signal_price = 0.0
             elif not self._vwap_active:
+                # REDUCE / CLOSE 走原 VWAP 分批(暂时保留)
                 self._submit_vwap(kline, action)
             else:
                 self.output(f"[VWAP进行中] 忽略pending {action}")
@@ -1257,7 +1395,11 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
 
-        # VWAP成交回报
+        # Scaled entry 通知成交 (2026-04-17)
+        if self._entry is not None:
+            self._entry.on_trade(trade.order_id, trade.price, trade.volume, datetime.now())
+
+        # VWAP成交回报 (legacy, 保留)
         if self._vwap_active:
             self._vwap_fill_pv += trade.price * trade.volume
             self._vwap_fill_lots += trade.volume

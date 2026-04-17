@@ -28,11 +28,22 @@ from modules.trading_day import get_trading_day, is_new_day, DAY_START_HOUR
 from modules.risk import check_stops, RiskManager
 from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
+from modules.execution import EntryParams, EntryState, ExecAction, ScaledEntryExecutor
 from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
 from modules.pricing import AggressivePricer
+from modules.rolling_vwap import RollingVWAP
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
+
+
+def _freq_to_sec(kline_style: str) -> int:
+    mapping = {
+        "M1": 60, "M3": 180, "M5": 300, "M15": 900, "M30": 1800,
+        "H1": 3600, "H2": 7200, "H4": 14400,
+        "D1": 86400, "W1": 604800,
+    }
+    return mapping.get(str(kline_style).upper(), 3600)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -146,6 +157,11 @@ class TestFullModule(BaseStrategy):
         self._pricer: AggressivePricer | None = None   # on_start 时按 tick_size 初始化
         self._multiplier = 100
 
+        # Scaled entry (2026-04-17)
+        self._rvwap: RollingVWAP | None = None
+        self._entry: ScaledEntryExecutor | None = None
+        self._rvwap_prev_vol = 0
+
     @property
     def main_indicator_data(self):
         return {
@@ -168,6 +184,11 @@ class TestFullModule(BaseStrategy):
         # 合约参数 (从contract_info获取, 不再硬编码)
         self._multiplier = get_multiplier(p.instrument_id)
         self._pricer = AggressivePricer(tick_size=get_tick_size(p.instrument_id))
+
+        # Scaled entry (2026-04-17)
+        self._rvwap = RollingVWAP(window_seconds=1800)
+        self._entry = ScaledEntryExecutor(EntryParams(bottom_lots=2))
+        self._rvwap_prev_vol = 0
 
         # 初始化需要instrument_id的模块
         self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
@@ -252,16 +273,29 @@ class TestFullModule(BaseStrategy):
         self.kline_generator.tick_to_kline(tick)
         p = self.params_map
 
-        # 喂 pricer + 检查 escalator
+        # 喂 pricer + RollingVWAP
         if self._pricer is not None:
             try:
                 self._pricer.update(tick)
             except Exception as e:
                 self.output(f"[pricer异常] {type(e).__name__}: {e}")
+        if self._rvwap is not None:
+            try:
+                self._rvwap.update(tick.last_price, tick.volume, datetime.now())
+            except Exception as e:
+                self.output(f"[rvwap异常] {type(e).__name__}: {e}")
+
+        # Escalator (legacy, 保留)
         if (self._guard is not None and self._guard.should_trade()
                 and self._pricer is not None):
             for oid, next_urgency, info in self._om.check_escalation():
                 self._resubmit_escalated(oid, next_urgency, info)
+
+        # Scaled entry 驱动 (2026-04-17)
+        try:
+            self._drive_entry(tick)
+        except Exception as e:
+            self.output(f"[entry异常] {type(e).__name__}: {e}")
 
         try:
             # 交易日切换（21:00 day start）
@@ -337,7 +371,20 @@ class TestFullModule(BaseStrategy):
 
         # 执行pending (next-bar规则)
         if self._pending is not None:
-            signal_price = self._execute(kline, self._pending)
+            action = self._pending
+            if action in ("OPEN", "ADD") and self._entry is not None:
+                # 2026-04-17: 入场走 ScaledEntryExecutor
+                net_pos = self.get_position(p.instrument_id).net_position
+                bar_total = _freq_to_sec(p.kline_style)
+                self._entry.on_signal(
+                    target=self._pending_target or 1, direction="buy",
+                    now=datetime.now(), current_position=net_pos,
+                    forecast=5.0,  # TestFullModule 无 forecast, 用默认
+                    bar_total_sec=bar_total,
+                )
+                signal_price = 0.0
+            else:
+                signal_price = self._execute(kline, action)
             self._pending = None
             self._pending_target = None
             self._pending_reason = ""
@@ -445,7 +492,19 @@ class TestFullModule(BaseStrategy):
 
         # ── 当前bar立即处理pending (不等下一根bar) ──
         if self._pending is not None:
-            signal_price = self._execute(kline, self._pending)
+            action = self._pending
+            if action in ("OPEN", "ADD") and self._entry is not None:
+                # 2026-04-17: 入场走 ScaledEntryExecutor
+                bar_total = _freq_to_sec(p.kline_style)
+                self._entry.on_signal(
+                    target=self._pending_target or 1, direction="buy",
+                    now=datetime.now(), current_position=net_pos,
+                    forecast=5.0,
+                    bar_total_sec=bar_total,
+                )
+                signal_price = 0.0
+            else:
+                signal_price = self._execute(kline, action)
             self._pending = None
             self._pending_target = None
             self._pending_reason = ""
@@ -462,6 +521,66 @@ class TestFullModule(BaseStrategy):
     # ══════════════════════════════════════════════════════════════════════
     #  执行
     # ══════════════════════════════════════════════════════════════════════
+
+    def _drive_entry(self, tick: TickData) -> None:
+        """每 tick 驱动 scaled entry executor (2026-04-17)."""
+        if self._entry is None or self._rvwap is None or self._pricer is None:
+            return
+        if not self.trading:
+            return
+        if self._guard is not None and not self._guard.should_trade():
+            return
+
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        net_pos = pos.net_position if pos else 0
+
+        actions = self._entry.on_tick(
+            now=datetime.now(),
+            last_price=tick.last_price,
+            bid1=self._pricer.bid1,
+            ask1=self._pricer.ask1,
+            tick_size=self._pricer.tick_size,
+            vwap_value=self._rvwap.value,
+            forecast=5.0,
+            current_position=net_pos,
+        )
+        for a in actions:
+            self._apply_entry_action(a)
+
+    def _apply_entry_action(self, a: ExecAction) -> None:
+        p = self.params_map
+        if a.op == "submit":
+            if a.kind == "open":
+                oid = self.send_order(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=a.vol, price=a.price, order_direction=a.direction,
+                )
+            else:
+                oid = self.auto_close_position(
+                    exchange=p.exchange, instrument_id=p.instrument_id,
+                    volume=a.vol, price=a.price, order_direction=a.direction,
+                )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, a.vol, a.price,
+                                 urgency="entry",
+                                 direction=a.direction, kind=a.kind)
+                self._entry.register_pending(oid, a.vol)
+                self.output(
+                    f"[ENTRY] {a.direction} {a.vol}手 @ {a.price:.1f} "
+                    f"urgency={a.urgency_score:.2f} state={self._entry.state.value}"
+                )
+        elif a.op == "cancel":
+            if a.oid is not None:
+                self.cancel_order(a.oid)
+                self._entry.register_cancelled(a.oid)
+                self.order_id.discard(a.oid)
+        elif a.op == "cancel_all":
+            for oid in list(self._entry.pending_oids.keys()):
+                self.cancel_order(oid)
+                self._entry.register_cancelled(oid)
+                self.order_id.discard(oid)
 
     def _aggressive_price(self, price, direction, urgency: str = "normal"):
         """Spread-aware 限价定价 (替代 market=True).
@@ -707,6 +826,9 @@ class TestFullModule(BaseStrategy):
         super().on_trade(trade, log=True)
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
+        # Scaled entry (2026-04-17)
+        if self._entry is not None:
+            self._entry.on_trade(trade.order_id, trade.price, trade.volume, datetime.now())
         slip = self._slip.on_fill(
             trade.price, trade.volume,
             "buy" if "买" in str(trade.direction) else "sell",

@@ -133,6 +133,46 @@ class AggressivePricer:
         """bid/ask 是否可用."""
         return self.bid1 > 0 and self.ask1 > 0
 
+    def price_with_urgency_score(
+        self,
+        direction: str,
+        urgency: float,
+        max_ticks: int = 10,
+    ) -> float:
+        """连续 urgency 分数版本, 供 ScaledEntryExecutor 入场路径用.
+
+        urgency: [0.0, 1.0] 分数(低=耐心等,高=激进穿越)
+        max_ticks: 穿越上限, urgency=1.0 时穿 max_ticks 档
+
+        映射:
+          urgency * max_ticks → 穿越 tick 数
+          - urgency=0.0 → ticks=0 → peg 本侧 (bid1 for buy, ask1 for sell)
+          - urgency=1.0 → ticks=max_ticks → 穿对手盘口 N 档
+
+        Fallback: 无 book 时用 last_price ± ticks (spread 自适应不生效)
+        """
+        if direction not in ("buy", "sell"):
+            raise ValueError(f"direction must be buy/sell, got {direction}")
+        urgency = max(0.0, min(1.0, urgency))
+        ticks = int(round(urgency * max_ticks))
+
+        # urgency=0: peg 本侧
+        if ticks == 0:
+            if direction == "buy":
+                return self.bid1 if self.has_book else self.last
+            return self.ask1 if self.has_book else self.last
+
+        # urgency>0: 穿对手盘口
+        if self.has_book:
+            if direction == "buy":
+                return self.ask1 + ticks * self.tick_size
+            return self.bid1 - ticks * self.tick_size
+
+        # Fallback: last_price ± ticks (no book)
+        if direction == "buy":
+            return self.last + ticks * self.tick_size
+        return self.last - ticks * self.tick_size
+
     def price(self, direction: str, urgency: str = "normal") -> float:
         """返回给 send_order / auto_close_position 的限价.
 

@@ -142,6 +142,55 @@ class TestSpreadAdaptation:
         assert p.price("buy", "normal") == 110
 
 
+class TestPriceWithUrgencyScore:
+    @pytest.fixture
+    def pricer_with_book(self):
+        p = AggressivePricer(tick_size=5.0, dump_first_tick=False)
+        p.update(_tick(last=100, bid=99.5, ask=100.5))
+        return p
+
+    def test_urgency_zero_pegs_bid1_for_buy(self, pricer_with_book):
+        # urgency=0 → 0 ticks → peg bid1
+        assert pricer_with_book.price_with_urgency_score("buy", 0.0) == 99.5
+
+    def test_urgency_zero_pegs_ask1_for_sell(self, pricer_with_book):
+        assert pricer_with_book.price_with_urgency_score("sell", 0.0) == 100.5
+
+    def test_urgency_one_crosses_max_ticks(self, pricer_with_book):
+        # urgency=1.0 → 10 ticks → ask1 + 10*5 = 150.5
+        assert pricer_with_book.price_with_urgency_score("buy", 1.0) == 100.5 + 10 * 5
+
+    def test_urgency_middle_rounds(self, pricer_with_book):
+        # urgency=0.5 → 5 ticks → ask1 + 25
+        assert pricer_with_book.price_with_urgency_score("buy", 0.5) == 100.5 + 5 * 5
+
+    def test_urgency_clamps_above_one(self, pricer_with_book):
+        assert pricer_with_book.price_with_urgency_score("buy", 1.5) == 100.5 + 10 * 5
+
+    def test_urgency_clamps_below_zero(self, pricer_with_book):
+        assert pricer_with_book.price_with_urgency_score("buy", -0.5) == 99.5
+
+    def test_custom_max_ticks(self, pricer_with_book):
+        # urgency=0.5, max=4 → 2 ticks
+        assert pricer_with_book.price_with_urgency_score("buy", 0.5, max_ticks=4) == 100.5 + 2 * 5
+
+    def test_sell_subtracts_from_bid(self, pricer_with_book):
+        # urgency=0.5 → 5 ticks → bid1 - 25
+        assert pricer_with_book.price_with_urgency_score("sell", 0.5) == 99.5 - 5 * 5
+
+    def test_no_book_fallback(self):
+        p = AggressivePricer(tick_size=5.0, dump_first_tick=False)
+        p.update(_tick(last=25500))  # no bid/ask
+        # urgency=0 → last
+        assert p.price_with_urgency_score("buy", 0.0) == 25500
+        # urgency=0.3 → 3 ticks → last + 15
+        assert p.price_with_urgency_score("buy", 0.3) == 25500 + 3 * 5
+
+    def test_invalid_direction_raises(self, pricer_with_book):
+        with pytest.raises(ValueError):
+            pricer_with_book.price_with_urgency_score("long", 0.5)
+
+
 class TestFallback:
     def test_no_book_fallback_to_last_price_plus_ticks(self):
         p = AggressivePricer(tick_size=5.0, dump_first_tick=False)
