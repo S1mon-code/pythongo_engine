@@ -175,6 +175,7 @@ class TestFullModule(BaseStrategy):
         self._rvwap: RollingVWAP | None = None
         self._entry: ScaledEntryExecutor | None = None
         self._rvwap_prev_vol = 0
+        self._unknown_oid_count = 0   # audit v3: 观察未归属 oid 的成交
 
     @property
     def main_indicator_data(self):
@@ -369,11 +370,15 @@ class TestFullModule(BaseStrategy):
         signal_price = 0.0
         p = self.params_map
 
-        # 撤挂单
+        # 撤挂单 (audit v2: 同步 executor pending_oids)
         for oid in list(self.order_id):
             self.cancel_order(oid)
+            if self._entry is not None:
+                self._entry.register_cancelled(oid)
         for oid in self._om.check_timeouts(self.cancel_order):
             self.output(f"[超时撤单] {oid}")
+            if self._entry is not None:
+                self._entry.register_cancelled(oid)
 
         # 历史回放阶段: 只推K线到图表, 不交易不算信号
         if not self.trading:
@@ -846,9 +851,20 @@ class TestFullModule(BaseStrategy):
         super().on_trade(trade, log=True)
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
-        # Scaled entry (2026-04-17, audit v2: 返回值用于隔离)
+        # Scaled entry (audit v3: 返回 bool 用于 unknown oid 追踪)
+        claimed_by_entry = False
         if self._entry is not None:
-            self._entry.on_trade(trade.order_id, trade.price, trade.volume, datetime.now())
+            claimed_by_entry = self._entry.on_trade(
+                trade.order_id, trade.price, trade.volume, datetime.now()
+            )
+        if not claimed_by_entry:
+            # 可能是 _execute 直接发的单 (信号 CLOSE/REDUCE/FLATTEN 等)
+            self._unknown_oid_count += 1
+            if self._unknown_oid_count <= 5 or self._unknown_oid_count % 20 == 0:
+                self.output(
+                    f"[ON_TRADE] 未归属 oid={trade.order_id} vol={trade.volume} "
+                    f"(可能是直接平仓/止损), count={self._unknown_oid_count}"
+                )
         slip = self._slip.on_fill(
             trade.price, trade.volume,
             "buy" if "买" in str(trade.direction) else "sell",
