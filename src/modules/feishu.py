@@ -14,15 +14,17 @@ ENABLED = True
 COLORS = {
     "open": "green", "add": "blue", "reduce": "orange", "close": "red",
     "hard_stop": "carmine", "trail_stop": "red", "equity_stop": "carmine",
-    "circuit": "carmine", "daily_stop": "carmine", "error": "carmine",
+    "circuit": "carmine", "daily_stop": "carmine", "flatten": "orange",
+    "error": "carmine",
     "start": "turquoise", "shutdown": "grey", "daily_review": "purple",
     "warning": "yellow", "info": "blue", "heartbeat": "indigo",
     "no_tick": "carmine", "rollover": "orange",
 }
 LABELS = {
     "open": "开仓", "add": "加仓", "reduce": "减仓", "close": "平仓",
-    "hard_stop": "��止损", "trail_stop": "移���止损", "equity_stop": "权益止损",
-    "circuit": "熔断", "daily_stop": "单日止损", "error": "异常",
+    "hard_stop": "硬止损", "trail_stop": "移动止损", "equity_stop": "权益止损",
+    "circuit": "熔断", "daily_stop": "单日止损", "flatten": "收盘清仓",
+    "error": "异常",
     "start": "策略启动", "shutdown": "策略停止", "daily_review": "每日回顾",
     "warning": "预警", "info": "信息", "heartbeat": "心跳",
     "no_tick": "行情中断", "rollover": "换月提醒",

@@ -1029,9 +1029,13 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
             exchange=p.exchange, instrument_id=p.instrument_id,
             volume=actual, price=buy_price, order_direction="buy",
         )
-        if oid is not None:
-            self.order_id.add(oid)
-            self._om.on_send(oid, actual, price)
+        if oid is None:
+            self.output(f"[TICK_STOP] auto_close_position 返回 None, 保留 _pending={action} 等 bar 重试")
+            feishu("error", p.instrument_id,
+                   f"**止损发单失败** action={action}\n逻辑: {reason}\n等待 bar 级重试")
+            return
+        self.order_id.add(oid)
+        self._om.on_send(oid, actual, price)
 
         labels = {
             "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
@@ -1051,9 +1055,13 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
                f"持仓: -{actual} -> 0手")
         self.avg_price = 0.0
         self.trough_price = 0.0
-        self._pending = None
+        # 保留 self._pending=action 阻止同一分钟/下一分钟的 tick 重复触发;
+        # bar-level safety net 会在下一 bar close 清理 (见 _on_bar 开头)
+        # 同步清理 risk 内部极值, 避免 trail line 残留
+        self._risk.peak_price = 0.0
+        self._risk.trough_price = 0.0
+        self._risk._last_trail_minute = None
         self._pending_target = None
-        self._pending_reason = ""
         self._save()
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
