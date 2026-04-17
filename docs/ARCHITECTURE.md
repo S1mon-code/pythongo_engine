@@ -79,7 +79,16 @@ pos = self.get_position(instrument_id).net_position
   - 新行为: `_on_bar`末尾检查`_pending`→止损立即`_execute()`/正常信号立即`_submit_twap()`→TWAP在当前bar的tick流中分批成交
   - 和QBase回测一致: Bar N收盘出信号→Bar N+1期间执行
   - `_on_bar`顶部仍保留`_pending`处理逻辑作为安全网（正常情况下不会触发）
-- **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)`
+- **非交易时段门控 (2026-04-17修复)**: 所有挂单/撤单必须在交易时段内完成。
+  - 触发案例: 08:59 (SHFE AL开盘前1分钟) 策略尝试撤单, SHFE pre-opening拒绝 → `{'errCode': '0004', 'errMsg': '已撤单报单被拒绝SHFE:当前状态禁止此项操作'}`; 随后09:00 VWAP以0手异常完成
+  - 根因: v8 inline VWAP + TWAP策略的 `_on_bar` 顶部撤单 + `_execute` 均未做 session check
+  - 修复: 四层门控 (全部基于 `self._guard.should_trade()`):
+    1. `_on_bar` 入口: 非交易时段直接 return, 不撤单/不挂单/不生成信号 (pending保留, 下根bar处理)
+    2. `_on_tick_vwap`/twap模块 `check()`: tick级发单前检查 (TWAP策略走shared `modules/twap.py`的`is_in_session`)
+    3. `_submit_vwap`/`_submit_twap`: 启动VWAP/TWAP窗口前检查
+    4. `_execute`: 止损等immediate action发单前兜底防御
+  - 覆盖范围: 22个策略文件 + 2个模板 (所有production Portfolio + 单策略 + VWAP变体v8 + Template_Long/Short)
+- **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)` — **必须在session gate之后执行**
 - **order_id追踪**: 用set追踪委托ID，在on_trade/on_order_cancel中清理
 - **market=True**: 市价单，price参数仅用于显示
 - **self.output()**: 不用print()

@@ -410,6 +410,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if not self._vwap_active:
             return
 
+        # 非交易时段一律不挂单 (SHFE pre-opening会拒单/拒撤)
+        if self._guard is not None and not self._guard.should_trade():
+            return
+
         price = tick.last_price
         now = time.time()
 
@@ -497,6 +501,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
     def _submit_vwap(self, kline: KLineData, action: str):
         """启动VWAP执行窗口."""
         p = self.params_map
+        # 非交易时段不启动VWAP (避免SHFE pre-opening拒单)
+        if self._guard is not None and not self._guard.should_trade():
+            self.output(f"[VWAP跳过] 非交易时段, 延后 {action}")
+            return
         pos = self.get_position(p.instrument_id)
         actual = pos.net_position if pos else 0
 
@@ -618,13 +626,6 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         signal_price = 0.0
         p = self.params_map
 
-        # 撤挂单 (VWAP进行中不撤)
-        if not self._vwap_active:
-            for oid in list(self.order_id):
-                self.cancel_order(oid)
-            for oid in self._om.check_timeouts(self.cancel_order):
-                self.output(f"[超时撤单] {oid}")
-
         # 历史回放
         if not self.trading:
             self._pending = None
@@ -632,6 +633,21 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self._pending_reason = ""
             self._push_widget(kline)
             return
+
+        # 非交易时段: 不撤单、不下单、不生成新信号 (SHFE pre-opening会拒单/拒撤)
+        # pending保留, 等交易时段开盘后下一根bar处理
+        if self._guard is not None and not self._guard.should_trade():
+            self.state_map.session = self._guard.get_status()
+            self._push_widget(kline)
+            self.update_status_bar()
+            return
+
+        # 撤挂单 (VWAP进行中不撤)
+        if not self._vwap_active:
+            for oid in list(self.order_id):
+                self.cancel_order(oid)
+            for oid in self._om.check_timeouts(self.cancel_order):
+                self.output(f"[超时撤单] {oid}")
 
         # 安全网: 处理上一根bar残留的pending
         if self._pending is not None:
@@ -737,12 +753,6 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.state_map.drawdown = f"{self._risk.drawdown_pct:.2%}"
             self.state_map.daily_pnl = f"{self._risk.daily_pnl_pct:+.2%}"
 
-        # ── 非交易时段 ──
-        if not self._guard.should_trade():
-            self._push_widget(kline, signal_price)
-            self.update_status_bar()
-            return
-
         # ── 止损检查 (多头: RiskManager直接处理) ──
         if net_pos > 0:
             action, reason = self._risk.check(
@@ -822,6 +832,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
         p = self.params_map
+        # 非交易时段防御: 立即执行动作也不能在非交易时段发单
+        if self._guard is not None and not self._guard.should_trade():
+            self.output(f"[执行跳过] 非交易时段, 延后 {action}")
+            return 0.0
         actual = self.get_position(p.instrument_id).net_position
 
         if action == "OPEN":

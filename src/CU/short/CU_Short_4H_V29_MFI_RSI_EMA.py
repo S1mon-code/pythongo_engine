@@ -466,13 +466,6 @@ class CU_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         signal_price = 0.0
         p = self.params_map
 
-        # 撤挂单 (TWAP进行中不撤)
-        if not self._twap.is_active:
-            for oid in list(self.order_id):
-                self.cancel_order(oid)
-            for oid in self._om.check_timeouts(self.cancel_order):
-                self.output(f"[超时撤单] {oid}")
-
         # 历史回放
         if not self.trading:
             self._pending = None
@@ -480,6 +473,21 @@ class CU_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
             self._pending_reason = ""
             self._push_widget(kline)
             return
+
+        # 非交易时段: 不撤单、不下单、不生成新信号 (SHFE pre-opening会拒单/拒撤)
+        # pending保留, 等交易时段开盘后下一根bar处理
+        if self._guard is not None and not self._guard.should_trade():
+            self.state_map.session = self._guard.get_status()
+            self._push_widget(kline)
+            self.update_status_bar()
+            return
+
+        # 撤挂单 (TWAP进行中不撤)
+        if not self._twap.is_active:
+            for oid in list(self.order_id):
+                self.cancel_order(oid)
+            for oid in self._om.check_timeouts(self.cancel_order):
+                self.output(f"[超时撤单] {oid}")
 
         # 执行pending: 止损立即(即使TWAP进行中也要执行), 正常信号→TWAP
         if self._pending is not None:
@@ -590,12 +598,6 @@ class CU_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
         #     self._push_widget(kline, kline.close)
         #     self.update_status_bar()
         #     return
-
-        # ── 非交易时段 ──
-        if not self._guard.should_trade():
-            self._push_widget(kline, signal_price)
-            self.update_status_bar()
-            return
 
         # ── 止损检查 (空头: 反向) ──
         if net_pos > 0:
@@ -725,6 +727,10 @@ class CU_Short_4H_V29_MFI_RSI_EMA(BaseStrategy):
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
         p = self.params_map
+        # 非交易时段防御: 立即执行动作也不能在非交易时段发单
+        if self._guard is not None and not self._guard.should_trade():
+            self.output(f"[执行跳过] 非交易时段, 延后 {action}")
+            return 0.0
         actual = abs(self.get_position(p.instrument_id).net_position)
 
         if action == "OPEN":

@@ -78,7 +78,8 @@ pyStrategy/
 ### 核心架构模式
 
 - **Same-bar执行 (2026-04-14)**: 信号在当前bar产生后立即提交TWAP，不等下一根bar。止损立即`_execute()`，正常信号立即`_submit_twap()`，TWAP在后续tick流中分批成交。和QBase回测时序一致（Bar N收盘出信号→Bar N+1期间执行）
-- **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)`
+- **非交易时段门控 (2026-04-17)**: 所有挂单/撤单必须在交易时段内。`_on_bar` 入口、`_on_tick_vwap`、`_submit_vwap/twap`、`_execute` 全部基于 `self._guard.should_trade()` 做门控。pre-opening(如SHFE 08:55-09:00集合竞价)发单/撤单会被拒绝(`errCode 0004`)。TWAP策略额外靠 `modules/twap.py` 的 `is_in_session` 做tick级保护。**`_on_bar`顶部的cancel_order块必须在session gate之后执行**
+- **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)` — 位于session gate之后
 - **21:00 Day Start**: 所有模块统一以21:00作为交易日切换点（夜盘开始）
 - **双时间框架**: Portfolio策略同时运行两个KLineGenerator（如H1+H4），各自独立出信号，合并成net_target
 
