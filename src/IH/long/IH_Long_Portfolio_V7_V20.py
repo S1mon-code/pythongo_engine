@@ -432,6 +432,11 @@ class IH_Long_Portfolio_V7_V20(BaseStrategy):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
 
+        try:
+            self._on_tick_stops(tick)
+        except Exception as e:
+            self.output(f"[stops异常] {type(e).__name__}: {e}")
+
         # 第二层: TWAP执行 (不能被辅助逻辑异常中断)
         try:
             self._on_tick_twap(tick)
@@ -445,6 +450,51 @@ class IH_Long_Portfolio_V7_V20(BaseStrategy):
             self.output(f"[on_tick异常] {type(e).__name__}: {e}")
             feishu("error", self.params_map.instrument_id,
                    f"**on_tick异常**\n{type(e).__name__}: {e}")
+
+    def _on_tick_stops(self, tick: TickData):
+        """Tick 级止损检查 (2026-04-17 重构).
+
+        - peak/trough 每 tick 更新
+        - 硬止损每 tick 判断, 立即触发
+        - 移动止损每分钟判断一次 (降噪)
+        """
+        if not self.trading:
+            return
+        if self._guard is not None and not self._guard.should_trade():
+            return
+        if self._pending is not None:
+            return  # 已有 pending, 让 _on_bar 处理
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        if pos is None:
+            return
+        net_pos = pos.net_position
+        price = tick.last_price
+
+        self._risk.update_peak_trough_tick(price, net_pos)
+        self.peak_price = self._risk.peak_price  # 同步给 state_map / save
+
+        if net_pos <= 0:
+            return
+
+        # 硬止损 — tick 级
+        action, reason = self._risk.check_hard_stop_tick(
+            price=price, avg_price=self.avg_price,
+            net_pos=net_pos, hard_stop_pct=p.hard_stop_pct,
+        )
+        if action:
+            self.output(f"[{action}][TICK] {reason}")
+            self._exec_stop_at_tick(price, action, reason)
+            return
+
+        # 移动止损 — 每分钟
+        action, reason = self._risk.check_trail_minutely(
+            price=price, now=datetime.now(),
+            net_pos=net_pos, trailing_pct=p.trailing_pct,
+        )
+        if action:
+            self.output(f"[{action}][M1] {reason}")
+            self._exec_stop_at_tick(price, action, reason)
 
     def _on_tick_twap(self, tick: TickData):
         """TWAP分批执行."""
@@ -657,8 +707,10 @@ class IH_Long_Portfolio_V7_V20(BaseStrategy):
         if net_pos == 0:
             self.avg_price = 0.0
             self.peak_price = 0.0
-        elif self.peak_price == 0.0 or close > self.peak_price:
-            self.peak_price = close
+        else:
+            # bar close 也参与 peak 更新, 避免 tick 丢失时峰值漂移
+            self._risk.update_peak_trough_tick(close, net_pos)
+            self.peak_price = self._risk.peak_price
         self.state_map.avg_price = round(self.avg_price, 1)
         self.state_map.peak_price = round(self.peak_price, 1)
         self.state_map.hard_line = (
@@ -693,8 +745,9 @@ class IH_Long_Portfolio_V7_V20(BaseStrategy):
             action, reason = self._risk.check(
                 close=close, avg_price=self.avg_price, peak_price=self.peak_price,
                 pos_profit=pos_profit, net_pos=net_pos,
-                hard_stop_pct=p.hard_stop_pct,
-                trailing_pct=p.trailing_pct, equity_stop_pct=p.equity_stop_pct,
+                hard_stop_pct=999.0,     # tick 层已处理
+                trailing_pct=999.0,      # tick/分钟层已处理
+                equity_stop_pct=p.equity_stop_pct,
             )
             if action and action not in ("WARNING", "REDUCE"):
                 self._pending = action
@@ -903,6 +956,64 @@ class IH_Long_Portfolio_V7_V20(BaseStrategy):
             return self._exec_close(kline, actual, action)
 
         return 0.0
+
+    def _exec_stop_at_tick(self, price: float, action: str, reason: str) -> None:
+        """Tick 触发的止损立即执行 (绕过 VWAP/TWAP).
+
+        price 来自 tick.last_price,动作来自 check_hard_stop_tick /
+        check_trail_minutely。执行路径与 _exec_close 一致,但用 tick 价而非
+        bar close 价,并同步清理 VWAP/TWAP/挂单/pending。
+        """
+        p = self.params_map
+        if self._guard is not None and not self._guard.should_trade():
+            return
+        pos = self.get_position(p.instrument_id)
+        if pos is None:
+            return
+        actual = pos.net_position
+        if actual <= 0:
+            return
+
+        if hasattr(self, '_vwap_active') and self._vwap_active:
+            self._vwap_cancel()
+        if hasattr(self, '_twap') and self._twap.is_active:
+            self._twap.cancel()
+        for oid in list(self.order_id):
+            self.cancel_order(oid)
+
+        self._pending_reason = reason
+        self._slip.set_signal_price(price)
+        sell_price = self._aggressive_price(price, "sell")
+        oid = self.auto_close_position(
+            exchange=p.exchange, instrument_id=p.instrument_id,
+            volume=actual, price=sell_price, order_direction="sell",
+        )
+        if oid is not None:
+            self.order_id.add(oid)
+            self._om.on_send(oid, actual, price)
+
+        labels = {
+            "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
+            "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断",
+            "DAILY_STOP": "单日止损", "FLATTEN": "即将收盘清仓",
+            "CLOSE": "信号平仓",
+        }
+        label = labels.get(action, action)
+        pnl_pct = (price - self.avg_price) / self.avg_price * 100 if self.avg_price > 0 else 0
+        abs_pnl = self._perf.on_close(self.avg_price, price, actual)
+        self.state_map.last_action = f"{label}[TICK] {pnl_pct:+.2f}%"
+        self._rec(label, actual, "卖", price, actual, 0)
+        feishu(action.lower(), p.instrument_id,
+               f"**{label}** (tick触发) {actual}手 @ {price:,.1f}\n"
+               f"逻辑: {reason}\n"
+               f"盈亏: {pnl_pct:+.2f}% ({abs_pnl:+,.0f})\n"
+               f"持仓: {actual} -> 0手")
+        self.avg_price = 0.0
+        self.peak_price = 0.0
+        self._pending = None
+        self._pending_target = None
+        self._pending_reason = ""
+        self._save()
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
         """统一平仓逻辑 (多头: 卖出平仓)."""

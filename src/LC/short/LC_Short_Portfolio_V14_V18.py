@@ -475,19 +475,63 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
 
-        # 第二层: TWAP执行 (不能被辅助逻辑异常中断)
+        # 第二层: Tick级止损 (优先于TWAP, 2026-04-17 重构)
+        try:
+            self._on_tick_stops(tick)
+        except Exception as e:
+            self.output(f"[stops异常] {type(e).__name__}: {e}")
+
+        # 第三层: TWAP执行 (不能被辅助逻辑异常中断)
         try:
             self._on_tick_twap(tick)
         except Exception as e:
             self.output(f"[TWAP异常] {type(e).__name__}: {e}")
 
-        # 第三层: 辅助逻辑 (异常不影响K线和TWAP)
+        # 第四层: 辅助逻辑 (异常不影响K线和TWAP)
         try:
             self._on_tick_aux(tick)
         except Exception as e:
             self.output(f"[on_tick异常] {type(e).__name__}: {e}")
             feishu("error", self.params_map.instrument_id,
                    f"**on_tick异常**\n{type(e).__name__}: {e}")
+
+    def _on_tick_stops(self, tick: TickData):
+        """Tick 级止损检查 — 做空方向 (2026-04-17 重构)."""
+        if not self.trading:
+            return
+        if self._guard is not None and not self._guard.should_trade():
+            return
+        if self._pending is not None:
+            return
+        p = self.params_map
+        pos = self.get_position(p.instrument_id)
+        if pos is None:
+            return
+        raw_pos = pos.net_position
+        price = tick.last_price
+
+        self._risk.update_peak_trough_tick(price, raw_pos)
+        self.trough_price = self._risk.trough_price
+
+        if raw_pos >= 0:
+            return
+
+        action, reason = self._risk.check_hard_stop_tick(
+            price=price, avg_price=self.avg_price,
+            net_pos=raw_pos, hard_stop_pct=p.hard_stop_pct,
+        )
+        if action:
+            self.output(f"[{action}][TICK] {reason}")
+            self._exec_stop_at_tick(price, action, reason)
+            return
+
+        action, reason = self._risk.check_trail_minutely(
+            price=price, now=datetime.now(),
+            net_pos=raw_pos, trailing_pct=p.trailing_pct,
+        )
+        if action:
+            self.output(f"[{action}][M1] {reason}")
+            self._exec_stop_at_tick(price, action, reason)
 
     def _on_tick_twap(self, tick: TickData):
         """TWAP分批执行."""
@@ -720,12 +764,13 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
         self.state_map.net_pos = -net_pos
         self.state_map.target_lots = -target
 
-        # ── 持仓追踪 (空头: trough = 最低价) ──
+        # ── 持仓追踪 (trough 由 _on_tick_stops 维护, 此处只同步显示) ──
         if net_pos == 0:
             self.avg_price = 0.0
             self.trough_price = 0.0
-        elif self.trough_price == 0.0 or close < self.trough_price:
-            self.trough_price = close
+        else:
+            self._risk.update_peak_trough_tick(close, -net_pos)
+            self.trough_price = self._risk.trough_price
         self.state_map.avg_price = round(self.avg_price, 1)
         self.state_map.trough_price = round(self.trough_price, 1)
         self.state_map.hard_line = (
@@ -761,27 +806,8 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
             self.update_status_bar()
             return
 
-        # ── 止损检查 (空头: hard/trail 内联) ──
+        # ── 止损检查 (hard/trail 由 _on_tick_stops 处理, bar 级只负责 equity/portfolio/daily) ──
         if net_pos > 0:
-            # Hard stop (空头): close >= avg_price * (1 + hard_stop_pct/100)
-            if self.avg_price > 0 and close >= self.avg_price * (1 + p.hard_stop_pct / 100):
-                self._pending = "HARD_STOP"
-                self._pending_reason = (
-                    f"硬止损(空) close={close:.1f} >= "
-                    f"avg*(1+{p.hard_stop_pct}%)={self.avg_price * (1 + p.hard_stop_pct / 100):.1f}"
-                )
-                self.output(f"[HARD_STOP] {self._pending_reason}")
-
-            # Trail stop (空头): close >= trough_price * (1 + trailing_pct/100)
-            if self.trough_price > 0 and close >= self.trough_price * (1 + p.trailing_pct / 100):
-                self._pending = "TRAIL_STOP"
-                self._pending_reason = (
-                    f"移动止损(空) close={close:.1f} >= "
-                    f"trough*(1+{p.trailing_pct}%)={self.trough_price * (1 + p.trailing_pct / 100):.1f}"
-                )
-                self.output(f"[TRAIL_STOP] {self._pending_reason}")
-
-            # Equity/Portfolio stops (RiskManager, hard_stop_pct=999 / trailing_pct=999 内联处理)
             action, reason = self._risk.check(
                 close=close, avg_price=self.avg_price, peak_price=self.avg_price,
                 pos_profit=pos_profit, net_pos=net_pos,
@@ -978,6 +1004,57 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
             return self._exec_close(kline, actual, action)
 
         return 0.0
+
+    def _exec_stop_at_tick(self, price: float, action: str, reason: str) -> None:
+        """Tick 触发的止损立即执行 — 做空方向 (买入平仓)."""
+        p = self.params_map
+        if self._guard is not None and not self._guard.should_trade():
+            return
+        pos = self.get_position(p.instrument_id)
+        if pos is None:
+            return
+        actual = abs(pos.net_position)
+        if actual <= 0:
+            return
+
+        if hasattr(self, '_twap') and self._twap.is_active:
+            self._twap.cancel()
+        for oid in list(self.order_id):
+            self.cancel_order(oid)
+
+        self._pending_reason = reason
+        self._slip.set_signal_price(price)
+        buy_price = self._aggressive_price(price, "buy")
+        oid = self.auto_close_position(
+            exchange=p.exchange, instrument_id=p.instrument_id,
+            volume=actual, price=buy_price, order_direction="buy",
+        )
+        if oid is not None:
+            self.order_id.add(oid)
+            self._om.on_send(oid, actual, price)
+
+        labels = {
+            "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
+            "EQUITY_STOP": "权益止损", "CIRCUIT": "熔断",
+            "DAILY_STOP": "单日止损", "FLATTEN": "即将收盘清仓",
+            "CLOSE": "信号平仓",
+        }
+        label = labels.get(action, action)
+        pnl_pct = (self.avg_price - price) / self.avg_price * 100 if self.avg_price > 0 else 0
+        abs_pnl = self._perf.on_close(self.avg_price, price, actual, direction="short")
+        self.state_map.last_action = f"{label}[TICK] {pnl_pct:+.2f}%"
+        self._rec(label, actual, "买", price, actual, 0)
+        feishu(action.lower(), p.instrument_id,
+               f"**{label}** (tick触发/空头) {actual}手 @ {price:,.1f}\n"
+               f"逻辑: {reason}\n"
+               f"盈亏: {pnl_pct:+.2f}% ({abs_pnl:+,.0f})\n"
+               f"持仓: -{actual} -> 0手")
+        self.avg_price = 0.0
+        self.trough_price = 0.0
+        self._pending = None
+        self._pending_target = None
+        self._pending_reason = ""
+        self._save()
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
         """统一平仓逻辑 (空头: 买入平仓, PnL = avg - close)."""
