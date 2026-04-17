@@ -40,6 +40,7 @@ class EntryState(Enum):
     BOTTOM = "bottom"
     OPPORTUNISTIC = "opp"
     FORCE = "force"
+    COMPLETE = "complete"
     LOCKED = "locked"
 
 
@@ -161,6 +162,7 @@ class ScaledEntryExecutor:
         """新 bar 信号. Reconcile 到新 target, 重置状态.
 
         如果当前有 pending_oids, 先 emit cancel actions 再重置。
+        若信号方向与当前持仓反向, 不入场 + 推飞书警告 + 保留 LOCKED(需策略层先平)。
         """
         if direction not in ("buy", "sell"):
             return []
@@ -168,10 +170,20 @@ class ScaledEntryExecutor:
         # 先清理旧 pending (mid-bar signal or LOCKED → new signal)
         actions = self._cancel_all_pending()
 
-        # Reconcile 方向
-        if direction == "buy" and current_position < 0:
-            return actions
-        if direction == "sell" and current_position > 0:
+        # Reconcile 方向 — 反向持仓必须先平仓, 否则拒绝入场
+        if (direction == "buy" and current_position < 0) or \
+           (direction == "sell" and current_position > 0):
+            actions.append(ExecAction(
+                op="feishu",
+                note=f"**ENTRY REJECTED** {direction} signal 与持仓 "
+                     f"{current_position} 反向, 需要策略层先平仓才能开新方向",
+            ))
+            # 保持 IDLE, 不进 BOTTOM
+            self.s = _State()
+            self.s.state = EntryState.IDLE
+            self.s.direction = direction
+            self.s.bar_start = now
+            self.s.bar_total_sec = bar_total_sec
             return actions
 
         abs_pos = abs(current_position)
@@ -215,6 +227,12 @@ class ScaledEntryExecutor:
         if self.s.bar_start is None:
             return []
 
+        # COMPLETE: filled 达到 target, 清理残留 pending(理论上应无), 回 IDLE
+        if self.s.state == EntryState.COMPLETE:
+            actions = self._cancel_all_pending()
+            self.s.state = EntryState.IDLE
+            return actions
+
         elapsed = (now - self.s.bar_start).total_seconds()
 
         # Bar 结束: 清理所有 pending, 回 IDLE
@@ -244,24 +262,40 @@ class ScaledEntryExecutor:
             )
         return []
 
-    def on_trade(self, oid, price: float, vol: int, now: datetime) -> None:
-        """成交回报. 更新 filled."""
-        if oid in self.s.pending_oids:
-            order = self.s.pending_oids[oid]
-            registered = order.vol
-            actual_vol = min(registered, vol)
-            self.s.filled += actual_vol
-            remaining_in_order = registered - actual_vol
-            if remaining_in_order > 0:
-                order.vol = remaining_in_order
-            else:
-                del self.s.pending_oids[oid]
+    def on_trade(self, oid, price: float, vol: int, now: datetime) -> bool:
+        """成交回报. 更新 filled. 返回 True 若 oid 是本 executor 登记的.
+
+        策略层可据此判断:若返回 False, trade 来自其他路径(VWAP, 止损),
+        不归 executor 管。
+        """
+        if oid not in self.s.pending_oids:
+            return False
+
+        order = self.s.pending_oids[oid]
+        registered = order.vol
+        actual_vol = min(registered, vol)
+        self.s.filled += actual_vol
+        remaining_in_order = registered - actual_vol
+        if remaining_in_order > 0:
+            order.vol = remaining_in_order
+        else:
+            del self.s.pending_oids[oid]
+
+        # 全单成交 / 部分成交 → 重置 rate limit 让下一 tick 可以立即挂下一手
+        # (fix: 原来 rate limit 10s 会卡住连续 opp 加挂)
+        self.s.last_submit_ts = None
 
         if (
             self.s.state == EntryState.BOTTOM
             and self.s.filled >= self.s.bottom_lots_actual
         ):
             self.s.bottom_filled = True
+
+        # 全部完成 → COMPLETE (短暂停留, 下一 tick 回 IDLE)
+        if self.s.filled >= self.s.target and self.s.state != EntryState.LOCKED:
+            self.s.state = EntryState.COMPLETE
+
+        return True
 
     def on_stop_triggered(self, now: datetime) -> list[ExecAction]:
         """止损触发. 清理 pending + 锁定本 bar."""
@@ -552,9 +586,9 @@ class ScaledEntryExecutor:
         vwap_value, forecast,
     ) -> list[ExecAction]:
         if self.remaining <= 0:
-            # 完成: cleanup + 回 IDLE
+            # 完成: cleanup + COMPLETE
             actions = self._cancel_all_pending()
-            self.s.state = EntryState.IDLE
+            self.s.state = EntryState.COMPLETE
             return actions
 
         if self.s.force_slot_start is None:

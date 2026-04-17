@@ -41,14 +41,29 @@ from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
 
 
-def _freq_to_sec(kline_style: str) -> int:
-    """kline_style → 秒数 (bar 周期)."""
+def _freq_to_sec(kline_style) -> int:
+    """kline_style → 秒数 (bar 周期). 防御性处理 str / enum / 带 dot 的 enum str."""
     mapping = {
         "M1": 60, "M3": 180, "M5": 300, "M15": 900, "M30": 1800,
         "H1": 3600, "H2": 7200, "H4": 14400,
         "D1": 86400, "W1": 604800,
     }
-    return mapping.get(str(kline_style).upper(), 3600)
+    # 尝试 str, 再尝试 enum.value / .name
+    for getter in (lambda x: str(x), lambda x: getattr(x, "value", None),
+                   lambda x: getattr(x, "name", None)):
+        try:
+            raw = getter(kline_style)
+            if raw is None:
+                continue
+            key = str(raw).upper()
+            # 处理形如 "KLINESTYLETYPE.H1" → "H1"
+            if "." in key:
+                key = key.rsplit(".", 1)[-1]
+            if key in mapping:
+                return mapping[key]
+        except Exception:
+            continue
+    return 3600   # safe default
 
 # 止损动作集 (止损立即执行, 不走VWAP)
 IMMEDIATE_ACTIONS = frozenset({
@@ -297,6 +312,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._vwap_fill_pv = 0.0        # 成交追踪: 累计 fill_price * fill_lots
         self._vwap_fill_lots = 0        # 成交追踪: 累计 fill_lots
         self._vwap_last_send = 0.0      # 限流: 上次发单时间戳
+        self._vwap_oids: set = set()    # VWAP 本轮自己发出的 oid (2026-04-17 隔离)
+        self._unknown_oid_count = 0     # 观察未知 oid 成交次数 (audit v2)
 
         # 权益追踪
         self._investor_id = ""
@@ -571,6 +588,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                     self.order_id.add(oid)
                     self._om.on_send(oid, batch, buy_price,
                                      urgency=vwap_urgency, direction="buy", kind="open")
+                    self._vwap_oids.add(oid)    # 标记为 VWAP-owned (audit v2)
                     self._vwap_remaining -= batch
                     self._vwap_last_send = now
                 self.output(
@@ -592,6 +610,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                     self.order_id.add(oid)
                     self._om.on_send(oid, batch, sell_price,
                                      urgency=vwap_urgency, direction="sell", kind="close")
+                    self._vwap_oids.add(oid)    # 标记为 VWAP-owned (audit v2)
                     self._vwap_remaining += batch
                     self._vwap_last_send = now
                 self.output(
@@ -669,6 +688,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.output(f"[VWAP取消] {self._vwap_action} 已成交{self._vwap_fill_lots}手")
         self._vwap_active = False
         self._vwap_remaining = 0
+        self._vwap_oids.clear()     # 清 VWAP oid 标记 (audit v2)
 
     def _vwap_complete(self):
         """VWAP执行完成."""
@@ -678,6 +698,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                f"成交: {self._vwap_fill_lots}手 VWAP={exec_vwap:.1f}")
         self.output(f"[VWAP完成] {self._vwap_action} {self._vwap_fill_lots}手 VWAP={exec_vwap:.1f}")
         self._vwap_active = False
+        self._vwap_oids.clear()
         self.state_map.vwap = "---"
 
     def _on_tick_aux(self, tick: TickData):
@@ -1426,16 +1447,32 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
 
-        # Scaled entry 通知成交 (2026-04-17)
-        if self._entry is not None:
-            self._entry.on_trade(trade.order_id, trade.price, trade.volume, datetime.now())
+        oid = trade.order_id
+        claimed_by_entry = False
 
-        # VWAP成交回报 (legacy, 保留)
-        if self._vwap_active:
-            self._vwap_fill_pv += trade.price * trade.volume
-            self._vwap_fill_lots += trade.volume
-            if self._vwap_remaining == 0:
-                self._vwap_complete()
+        # 优先路由给 scaled entry (audit v2: 只在 oid 归属 entry 时才加)
+        if self._entry is not None:
+            claimed_by_entry = self._entry.on_trade(
+                oid, trade.price, trade.volume, datetime.now()
+            )
+
+        # VWAP 成交: 只在 oid 确实归属 VWAP 时才累加 (audit v2: 避免 entry fill 污染)
+        if oid in self._vwap_oids:
+            self._vwap_oids.discard(oid)
+            if self._vwap_active:
+                self._vwap_fill_pv += trade.price * trade.volume
+                self._vwap_fill_lots += trade.volume
+                if self._vwap_remaining == 0:
+                    self._vwap_complete()
+        elif not claimed_by_entry:
+            # 未归属任何路径: 可能是 _exec_stop_at_tick / _execute 直接发的平仓/止损单
+            # 或 bar 切换时的遗留。不累加 VWAP 成交,避免记账错位
+            self._unknown_oid_count += 1
+            if self._unknown_oid_count <= 5 or self._unknown_oid_count % 20 == 0:
+                self.output(
+                    f"[ON_TRADE] 未归属 oid={oid} vol={trade.volume} "
+                    f"(可能是止损/直接平仓/bar切换残留), count={self._unknown_oid_count}"
+                )
 
         # 用实际成交价更新avg_price (多头)
         pos = self.get_position(self.params_map.instrument_id)

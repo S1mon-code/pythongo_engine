@@ -681,6 +681,85 @@ class TestBarAwareBottomWait:
         assert len([a for a in a2 if a.op == "submit"]) == 1
 
 
+class TestOppositeDirection:
+    """Audit v2: opposite direction signal 应该 emit feishu 警告 + 不入场."""
+
+    def test_long_signal_with_short_position_rejected(self):
+        ex = ScaledEntryExecutor(_default_params())
+        actions = ex.on_signal(
+            target=6, direction="buy", now=T0,
+            current_position=-3, forecast=5.0,
+        )
+        feishu_actions = [a for a in actions if a.op == "feishu"]
+        assert len(feishu_actions) >= 1
+        assert "REJECTED" in feishu_actions[0].note
+        assert ex.state == EntryState.IDLE
+
+    def test_short_signal_with_long_position_rejected(self):
+        ex = ScaledEntryExecutor(_default_params())
+        actions = ex.on_signal(
+            target=3, direction="sell", now=T0,
+            current_position=4, forecast=5.0,
+        )
+        feishu_actions = [a for a in actions if a.op == "feishu"]
+        assert len(feishu_actions) >= 1
+        assert ex.state == EntryState.IDLE
+
+
+class TestOnTradeReturnValue:
+    """Audit v2: on_trade 返回 bool 供策略层隔离路由."""
+
+    def test_returns_true_for_owned_oid(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(oid=1, vol=2, price=99.5)
+        claimed = ex.on_trade(1, 99.5, 2, T0 + timedelta(seconds=90))
+        assert claimed is True
+
+    def test_returns_false_for_unknown_oid(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        claimed = ex.on_trade(999, 99.5, 1, T0 + timedelta(seconds=90))
+        assert claimed is False
+
+
+class TestRateLimitResetOnFill:
+    """Audit v2: fill 后 last_submit_ts 重置, 下一 tick 可以立即再挂."""
+
+    def test_last_submit_ts_reset_after_fill(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.last_submit_ts = T0 + timedelta(seconds=100)
+        ex.register_pending(1, 1, price=99.5)
+        ex.on_trade(1, 99.5, 1, T0 + timedelta(seconds=105))
+        assert ex.s.last_submit_ts is None
+
+
+class TestCompleteState:
+    """Audit v2: filled>=target 转 COMPLETE, 下一 tick 回 IDLE."""
+
+    def test_fills_to_target_enters_complete(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=2, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(1, 2, price=99.5)
+        ex.on_trade(1, 99.5, 2, T0 + timedelta(seconds=90))
+        assert ex.state == EntryState.COMPLETE
+
+    def test_complete_to_idle_on_next_tick(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=2, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(1, 2, price=99.5)
+        ex.on_trade(1, 99.5, 2, T0 + timedelta(seconds=90))
+        assert ex.state == EntryState.COMPLETE
+        ex.on_tick(**_base_tick_args(elapsed_sec=120))
+        assert ex.state == EntryState.IDLE
+
+
 class TestPendingOidFormat:
     """Audit fix: pending_oids 值现在是 _PendingOrder."""
 

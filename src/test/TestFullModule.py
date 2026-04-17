@@ -37,13 +37,27 @@ from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
 
 
-def _freq_to_sec(kline_style: str) -> int:
+def _freq_to_sec(kline_style) -> int:
+    """防御性 str / enum / KLineStyleType 解析."""
     mapping = {
         "M1": 60, "M3": 180, "M5": 300, "M15": 900, "M30": 1800,
         "H1": 3600, "H2": 7200, "H4": 14400,
         "D1": 86400, "W1": 604800,
     }
-    return mapping.get(str(kline_style).upper(), 3600)
+    for getter in (lambda x: str(x), lambda x: getattr(x, "value", None),
+                   lambda x: getattr(x, "name", None)):
+        try:
+            raw = getter(kline_style)
+            if raw is None:
+                continue
+            key = str(raw).upper()
+            if "." in key:
+                key = key.rsplit(".", 1)[-1]
+            if key in mapping:
+                return mapping[key]
+        except Exception:
+            continue
+    return 3600
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -832,7 +846,7 @@ class TestFullModule(BaseStrategy):
         super().on_trade(trade, log=True)
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
-        # Scaled entry (2026-04-17)
+        # Scaled entry (2026-04-17, audit v2: 返回值用于隔离)
         if self._entry is not None:
             self._entry.on_trade(trade.order_id, trade.price, trade.volume, datetime.now())
         slip = self._slip.on_fill(
