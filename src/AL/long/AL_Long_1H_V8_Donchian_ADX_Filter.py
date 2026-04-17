@@ -34,6 +34,7 @@ from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
 from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
+from modules.pricing import AggressivePricer
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
 
@@ -298,6 +299,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._hb = None
         self._om = OrderMonitor()
         self._perf = None
+        self._pricer: AggressivePricer | None = None   # on_start 时根据 tick_size 初始化
         self._multiplier = 5
 
     @property
@@ -316,6 +318,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
     def on_start(self):
         p = self.params_map
         self._multiplier = get_multiplier(p.instrument_id)
+        self._pricer = AggressivePricer(tick_size=get_tick_size(p.instrument_id))
 
         self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
         self._slip = SlippageTracker(p.instrument_id)
@@ -392,6 +395,13 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
     def on_tick(self, tick: TickData):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
+
+        # 先喂 pricer, 后续 stops/vwap/escalator 都依赖它
+        if self._pricer is not None:
+            try:
+                self._pricer.update(tick)
+            except Exception as e:
+                self.output(f"[pricer异常] {type(e).__name__}: {e}")
 
         try:
             self._on_tick_stops(tick)
@@ -500,22 +510,25 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         size = max(1, abs(self._vwap_remaining) // 2)
         p = self.params_map
 
+        # VWAP 普通批次用 cross,强制模式用 urgent (escalator 也会自然升级)
+        vwap_urgency = "urgent" if force else "cross"
         if self._vwap_remaining > 0:
             # 需要买: 价格低于VWAP时买, 或强制成交
             if price < vwap or force:
                 batch = min(self._vwap_remaining, size)
-                buy_price = self._aggressive_price(price, "buy")
+                buy_price = self._aggressive_price(price, "buy", urgency=vwap_urgency)
                 oid = self.send_order(
                     exchange=p.exchange, instrument_id=p.instrument_id,
                     volume=batch, price=buy_price, order_direction="buy",
                 )
                 if oid is not None:
                     self.order_id.add(oid)
-                    self._om.on_send(oid, batch, price)
+                    self._om.on_send(oid, batch, buy_price,
+                                     urgency=vwap_urgency, direction="buy", kind="open")
                     self._vwap_remaining -= batch
                     self._vwap_last_send = now
                 self.output(
-                    f"[VWAP] buy {batch}手 @ {price:.1f} "
+                    f"[VWAP] buy {batch}手 @ {buy_price:.1f} "
                     f"vwap={vwap:.1f} remain={self._vwap_remaining}"
                     f"{' (FORCE)' if force else ''}"
                 )
@@ -524,14 +537,15 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             # 需要卖: 价格高于VWAP时卖, 或强制成交
             batch = min(abs(self._vwap_remaining), size)
             if price > vwap or force:
-                sell_price = self._aggressive_price(price, "sell")
+                sell_price = self._aggressive_price(price, "sell", urgency=vwap_urgency)
                 oid = self.auto_close_position(
                     exchange=p.exchange, instrument_id=p.instrument_id,
                     volume=batch, price=sell_price, order_direction="sell",
                 )
                 if oid is not None:
                     self.order_id.add(oid)
-                    self._om.on_send(oid, batch, price)
+                    self._om.on_send(oid, batch, sell_price,
+                                     urgency=vwap_urgency, direction="sell", kind="close")
                     self._vwap_remaining += batch
                     self._vwap_last_send = now
                 self.output(
@@ -622,6 +636,12 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
 
     def _on_tick_aux(self, tick: TickData):
         p = self.params_map
+
+        # ── 未成交订单 urgency 升级 ──
+        if self._guard is not None and self._guard.should_trade() and self._pricer is not None:
+            to_escalate = self._om.check_escalation()
+            for oid, next_urgency, info in to_escalate:
+                self._resubmit_escalated(oid, next_urgency, info)
 
         td = get_trading_day()
         if td != self._current_td and self._current_td:
@@ -878,9 +898,64 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
     #  执行 (LONG: open=buy, close=sell) — 止损立即执行, 不走VWAP
     # ══════════════════════════════════════════════════════════════════════
 
-    def _aggressive_price(self, price, direction):
-        """SHFE实盘不支持市价卖单，用当前价限价单代替."""
-        return price
+    def _resubmit_escalated(self, old_oid, next_urgency: str, info: dict) -> None:
+        """撤掉未成交订单, 按 next_urgency 重新挂单.
+
+        策略: 完全复用原订单的方向/手数/kind, 只换 urgency→新价格。
+        """
+        direction = info.get("direction")
+        kind = info.get("kind")
+        vol = info.get("vol", 0)
+        if not direction or not kind or vol <= 0:
+            return
+        if self._pricer is None or self._pricer.last == 0:
+            return
+        p = self.params_map
+
+        # 撤老单
+        self.cancel_order(old_oid)
+        self._om.on_cancel(old_oid)
+        self.order_id.discard(old_oid)
+
+        # 按新 urgency 计算新价
+        new_price = self._pricer.price(direction, next_urgency)
+
+        # 重新发单 (open 用 send_order, close/reduce 用 auto_close_position)
+        if kind == "open":
+            new_oid = self.send_order(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=new_price, order_direction=direction,
+            )
+        else:
+            new_oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=new_price, order_direction=direction,
+            )
+        if new_oid is None:
+            self.output(f"[ESCALATE] oid={old_oid} → {next_urgency}: 重发 None")
+            return
+        self.order_id.add(new_oid)
+        self._om.on_send(new_oid, vol, new_price,
+                         urgency=next_urgency, direction=direction, kind=kind)
+        self.output(
+            f"[ESCALATE] {old_oid} → {new_oid} | {direction} {vol}手 "
+            f"@ {new_price:.1f} | {info.get('urgency')} → {next_urgency}"
+        )
+
+    def _aggressive_price(self, price, direction, urgency: str = "normal"):
+        """Spread-aware 限价定价.
+
+        price 作为 fallback (pricer 未初始化 / 无 book 且 last=0)。
+        urgency: passive / normal / cross / urgent / critical
+          - passive  OPEN/ADD 建仓 (escalator 会升级)
+          - normal   REDUCE 减仓 + 信号 CLOSE
+          - cross    VWAP 分批
+          - urgent   HARD_STOP / TRAIL_STOP
+          - critical EQUITY_STOP / CIRCUIT / DAILY_STOP / FLATTEN
+        """
+        if self._pricer is None or self._pricer.last == 0:
+            return price
+        return self._pricer.price(direction, urgency)
 
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
@@ -900,14 +975,15 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 feishu("error", p.instrument_id, f"**保证金不足** 需开{vol}手")
                 return 0.0
             self._slip.set_signal_price(price)
-            buy_price = self._aggressive_price(price, "buy")
+            buy_price = self._aggressive_price(price, "buy", urgency="passive")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
                 volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
-                self._om.on_send(oid, vol, price)
+                self._om.on_send(oid, vol, buy_price,
+                                 urgency="passive", direction="buy", kind="open")
             self.avg_price = price
             self.peak_price = price
             self.state_map.last_action = f"建仓{vol}手"
@@ -927,14 +1003,15 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 self.output("[加仓保证金不足]")
                 return 0.0
             self._slip.set_signal_price(price)
-            buy_price = self._aggressive_price(price, "buy")
+            buy_price = self._aggressive_price(price, "buy", urgency="passive")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
                 volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
-                self._om.on_send(oid, vol, price)
+                self._om.on_send(oid, vol, buy_price,
+                                 urgency="passive", direction="buy", kind="open")
             self.avg_price = (
                 (self.avg_price * actual + price * vol) / (actual + vol)
                 if actual > 0 else price
@@ -954,14 +1031,15 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             if actual <= 0:
                 return 0.0
             self._slip.set_signal_price(price)
-            sell_price = self._aggressive_price(price, "sell")
+            sell_price = self._aggressive_price(price, "sell", urgency="normal")
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
                 volume=vol, price=sell_price, order_direction="sell",
             )
             if oid is not None:
                 self.order_id.add(oid)
-                self._om.on_send(oid, vol, price)
+                self._om.on_send(oid, vol, sell_price,
+                                 urgency="normal", direction="sell", kind="reduce")
             self.state_map.last_action = f"减仓{vol}手"
             self._rec("减仓", vol, "卖", price, actual, actual - vol)
             feishu("reduce", p.instrument_id,
@@ -1001,7 +1079,9 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
 
         self._pending_reason = reason
         self._slip.set_signal_price(price)
-        sell_price = self._aggressive_price(price, "sell")
+        # 止损路径 urgency: HARD/TRAIL → urgent, EQUITY/CIRCUIT/DAILY/FLATTEN → critical
+        stop_urgency = "critical" if action in ("EQUITY_STOP", "CIRCUIT", "DAILY_STOP", "FLATTEN") else "urgent"
+        sell_price = self._aggressive_price(price, "sell", urgency=stop_urgency)
         oid = self.auto_close_position(
             exchange=p.exchange, instrument_id=p.instrument_id,
             volume=actual, price=sell_price, order_direction="sell",
@@ -1012,7 +1092,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                    f"**止损发单失败** action={action}\n逻辑: {reason}\n等待 bar 级重试")
             return
         self.order_id.add(oid)
-        self._om.on_send(oid, actual, price)
+        self._om.on_send(oid, actual, sell_price,
+                         urgency=stop_urgency, direction="sell", kind="close")
 
         labels = {
             "HARD_STOP": "硬止损", "TRAIL_STOP": "移动止损",
@@ -1055,14 +1136,19 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if actual <= 0:
             return 0.0
         self._slip.set_signal_price(price)
-        sell_price = self._aggressive_price(price, "sell")
+        # bar 级平仓 urgency 随 action:止损类 urgent,信号 CLOSE normal
+        bar_urgency = "normal" if action == "CLOSE" else (
+            "critical" if action in ("EQUITY_STOP", "CIRCUIT", "DAILY_STOP", "FLATTEN") else "urgent"
+        )
+        sell_price = self._aggressive_price(price, "sell", urgency=bar_urgency)
         oid = self.auto_close_position(
             exchange=p.exchange, instrument_id=p.instrument_id,
             volume=actual, price=sell_price, order_direction="sell",
         )
         if oid is not None:
             self.order_id.add(oid)
-            self._om.on_send(oid, actual, price)
+            self._om.on_send(oid, actual, sell_price,
+                             urgency=bar_urgency, direction="sell", kind="close")
         pnl_pct = (price - self.avg_price) / self.avg_price * 100 if self.avg_price > 0 else 0
         abs_pnl = self._perf.on_close(self.avg_price, price, actual)
         self.state_map.last_action = f"{label} {pnl_pct:+.2f}%"

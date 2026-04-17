@@ -30,6 +30,7 @@ from modules.slippage import SlippageTracker
 from modules.heartbeat import HeartbeatMonitor
 from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
+from modules.pricing import AggressivePricer
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
 
@@ -142,6 +143,7 @@ class TestFullModule(BaseStrategy):
         self._hb = None
         self._om = OrderMonitor()
         self._perf = None
+        self._pricer: AggressivePricer | None = None   # on_start 时按 tick_size 初始化
         self._multiplier = 100
 
     @property
@@ -165,6 +167,7 @@ class TestFullModule(BaseStrategy):
 
         # 合约参数 (从contract_info获取, 不再硬编码)
         self._multiplier = get_multiplier(p.instrument_id)
+        self._pricer = AggressivePricer(tick_size=get_tick_size(p.instrument_id))
 
         # 初始化需要instrument_id的模块
         self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
@@ -248,6 +251,18 @@ class TestFullModule(BaseStrategy):
         super().on_tick(tick)
         self.kline_generator.tick_to_kline(tick)
         p = self.params_map
+
+        # 喂 pricer + 检查 escalator
+        if self._pricer is not None:
+            try:
+                self._pricer.update(tick)
+            except Exception as e:
+                self.output(f"[pricer异常] {type(e).__name__}: {e}")
+        if (self._guard is not None and self._guard.should_trade()
+                and self._pricer is not None):
+            for oid, next_urgency, info in self._om.check_escalation():
+                self._resubmit_escalated(oid, next_urgency, info)
+
         try:
             # 交易日切换（21:00 day start）
             td = get_trading_day()
@@ -448,6 +463,53 @@ class TestFullModule(BaseStrategy):
     #  执行
     # ══════════════════════════════════════════════════════════════════════
 
+    def _aggressive_price(self, price, direction, urgency: str = "normal"):
+        """Spread-aware 限价定价 (替代 market=True).
+
+        urgency: passive(入场) / normal(减仓/信号CLOSE) / cross(VWAP) /
+                 urgent(硬/移止损) / critical(熔断/权益/单日/FLATTEN)
+        """
+        if self._pricer is None or self._pricer.last == 0:
+            return price
+        return self._pricer.price(direction, urgency)
+
+    def _resubmit_escalated(self, old_oid, next_urgency: str, info: dict) -> None:
+        """Escalator: 撤掉未成交订单, 按 next_urgency 重挂."""
+        direction = info.get("direction")
+        kind = info.get("kind")
+        vol = info.get("vol", 0)
+        if not direction or not kind or vol <= 0:
+            return
+        if self._pricer is None or self._pricer.last == 0:
+            return
+        p = self.params_map
+
+        self.cancel_order(old_oid)
+        self._om.on_cancel(old_oid)
+        self.order_id.discard(old_oid)
+
+        new_price = self._pricer.price(direction, next_urgency)
+        if kind == "open":
+            new_oid = self.send_order(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=new_price, order_direction=direction,
+            )
+        else:
+            new_oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=vol, price=new_price, order_direction=direction,
+            )
+        if new_oid is None:
+            self.output(f"[ESCALATE] oid={old_oid} → {next_urgency}: 重发 None")
+            return
+        self.order_id.add(new_oid)
+        self._om.on_send(new_oid, vol, new_price,
+                         urgency=next_urgency, direction=direction, kind=kind)
+        self.output(
+            f"[ESCALATE] {old_oid} → {new_oid} | {direction} {vol}手 "
+            f"@ {new_price:.1f} | {info.get('urgency')} → {next_urgency}"
+        )
+
     def _execute(self, kline: KLineData, action: str) -> float:
         price = kline.close
         p = self.params_map
@@ -463,13 +525,15 @@ class TestFullModule(BaseStrategy):
                 feishu("error", p.instrument_id, f"**保证金不足** 需开{vol}手")
                 return 0.0
             self._slip.set_signal_price(price)
+            buy_price = self._aggressive_price(price, "buy", urgency="passive")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="buy", market=True,
+                volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
-                self._om.on_send(oid, vol, price)
+                self._om.on_send(oid, vol, buy_price,
+                                 urgency="passive", direction="buy", kind="open")
             self.avg_price = price
             self.peak_price = price
             self.state_map.last_action = f"建仓{vol}手"
@@ -489,13 +553,15 @@ class TestFullModule(BaseStrategy):
                 self.output("[加仓保证金不足]")
                 return 0.0
             self._slip.set_signal_price(price)
+            buy_price = self._aggressive_price(price, "buy", urgency="passive")
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="buy", market=True,
+                volume=vol, price=buy_price, order_direction="buy",
             )
             if oid is not None:
                 self.order_id.add(oid)
-                self._om.on_send(oid, vol, price)
+                self._om.on_send(oid, vol, buy_price,
+                                 urgency="passive", direction="buy", kind="open")
             self.avg_price = (
                 (self.avg_price * actual + price * vol) / (actual + vol)
                 if actual > 0 else price
@@ -514,12 +580,15 @@ class TestFullModule(BaseStrategy):
             vol = max(1, actual // 2)
             if actual <= 0:
                 return 0.0
+            sell_price = self._aggressive_price(price, "sell", urgency="normal")
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=vol, price=price, order_direction="sell", market=True,
+                volume=vol, price=sell_price, order_direction="sell",
             )
             if oid is not None:
                 self.order_id.add(oid)
+                self._om.on_send(oid, vol, sell_price,
+                                 urgency="normal", direction="sell", kind="reduce")
             self.state_map.last_action = f"回撤减仓{vol}手"
             self._rec("回撤减仓", vol, "卖", price, actual, actual - vol)
             feishu("reduce", p.instrument_id,
@@ -549,13 +618,19 @@ class TestFullModule(BaseStrategy):
         if actual <= 0:
             return 0.0
         self._slip.set_signal_price(price)
+        # 止损类 urgent, 熔断/权益/单日/FLATTEN critical, 信号 CLOSE normal
+        bar_urgency = "normal" if action == "CLOSE" else (
+            "critical" if action in ("EQUITY_STOP", "CIRCUIT", "DAILY_STOP", "FLATTEN") else "urgent"
+        )
+        sell_price = self._aggressive_price(price, "sell", urgency=bar_urgency)
         oid = self.auto_close_position(
             exchange=p.exchange, instrument_id=p.instrument_id,
-            volume=actual, price=price, order_direction="sell", market=True,
+            volume=actual, price=sell_price, order_direction="sell",
         )
         if oid is not None:
             self.order_id.add(oid)
-            self._om.on_send(oid, actual, price)
+            self._om.on_send(oid, actual, sell_price,
+                             urgency=bar_urgency, direction="sell", kind="close")
         pnl_pct = (price - self.avg_price) / self.avg_price * 100 if self.avg_price > 0 else 0
         abs_pnl = self._perf.on_close(self.avg_price, price, actual)
         self.state_map.last_action = f"{label} {pnl_pct:+.2f}%"
