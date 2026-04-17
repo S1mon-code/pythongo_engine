@@ -1,9 +1,9 @@
-"""Scaled Entry Executor — 像人类交易员一样分仓进场 (2026-04-17).
+"""Scaled Entry Executor — 像人类交易员一样分仓进场 (2026-04-17, v2 audit-fixed).
 
 设计哲学:
   - 信号 = 本 bar 内的仓位目标, 不是瞬时指令
   - 分仓 (底仓 + 剩余按节奏分批)
-  - 盘口挂单 (bid1 for buy, ask1 for sell), 追价重挂
+  - 盘口挂单 (bid1 for buy, ask1 for sell), 追价重挂(peg-to-bid1 drift)
   - VWAP 作为"便宜价"参考 (price < VWAP 时主动加挂)
   - 兜底催单 (bar 30 分钟后每 5 分钟必须成交 1 手)
   - 止损触发 → 本 bar 锁定放弃剩余
@@ -11,14 +11,17 @@
   - 动态 urgency 分数驱动穿越 tick 数
 
 状态机:
-  IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
+  IDLE → BOTTOM → OPPORTUNISTIC → FORCE → IDLE
   任意 → LOCKED (止损) → IDLE (新 bar 信号)
 
-关键设计决策:
-  - 记账用 `remaining = target - filled - pending_vol` 动态算, 避免 V8 VWAP
-    的"发单成功就扣 remaining, cancel 不回补"bug
-  - Executor 返回 ExecAction 列表, 策略层执行, 状态和行为分离便于单测
-  - 所有 state 封装在 Executor 对象内, 策略不直接访问内部字段
+Audit v2 修复 (2026-04-17):
+  - 所有状态转换点 (on_signal / on_stop_triggered / bar-end) 现在返回
+    list[ExecAction] 包括对 pending_oids 的 cancel, 策略层照单执行
+  - pending_oids 值改为 dict {vol, price}, 支持真实 peg-to-bid1 追价重挂
+  - BOTTOM 过期 (T>deadline_sec) 自动撤老单 + 更高 urgency 重挂, 不再死锁
+  - FORCE slot 推进只看时间不看 fill, 避免持续成交永远 peg
+  - BOTTOM 初始 wait 自适应 bar 长度 (短 bar 适配)
+  - force_cross_min_urgency 参数化 (3 tick vs 7-10 tick 可配)
 """
 from __future__ import annotations
 
@@ -29,8 +32,6 @@ from enum import Enum
 from typing import Optional
 
 
-# ────────────────────────────────────────────────────────────────────── #
-#  状态枚举
 # ────────────────────────────────────────────────────────────────────── #
 
 
@@ -43,8 +44,6 @@ class EntryState(Enum):
 
 
 # ────────────────────────────────────────────────────────────────────── #
-#  参数
-# ────────────────────────────────────────────────────────────────────── #
 
 
 @dataclass
@@ -52,63 +51,69 @@ class EntryParams:
     """入场执行参数 (策略层传入)."""
 
     # --- 底仓 ---
-    bottom_lots: Optional[int] = 2           # 固定手数 (和 bottom_ratio 二选一)
-    bottom_ratio: Optional[float] = None     # target 的比例
-    bottom_deadline_sec: int = 300           # 5 min 未成就强制(urgency 拔高)
+    bottom_lots: Optional[int] = 2
+    bottom_ratio: Optional[float] = None
+    bottom_deadline_sec: int = 300
+    bottom_wait_sec: int = 60          # 首次提交前等待(M1 bar 形成); 短 bar 自动缩放
 
     # --- 机会阶段 ---
     opp_min_submit_interval_sec: int = 10
     max_concurrent_pending: int = 3
 
     # --- 催单 ---
-    force_start_sec: int = 1800              # 30 min
-    force_slot_sec: int = 300                # 5 min
-    force_peg_sec: int = 120                 # slot 前 2 min peg
+    force_start_sec: int = 1800
+    force_slot_sec: int = 300
+    force_peg_sec: int = 120
+    force_cross_min_urgency: float = 0.75   # cross 段最低 urgency (0.75=~7-8tick, 0.3=~3tick)
 
     # --- 超目标 ---
     over_target_enabled: bool = True
-    over_target_vwap_pct: float = 0.5        # price < VWAP × (1 - 0.5/100)
+    over_target_vwap_pct: float = 0.5
     over_target_forecast: float = 5.0
     over_target_ratio: float = 0.20
+    over_target_latest_sec: int = 1500   # bar 进度 >该值 不再触发超目标 (剩余时间不够消化)
 
     # --- Urgency ---
     max_entry_cross_ticks: int = 10
-    # (time, deficit, signal, opportunity)
     urgency_weights: tuple = (0.40, 0.30, 0.15, 0.15)
 
-    # --- 未来扩展 (本期不启用) ---
+    # --- Peg (盘口追价) ---
+    peg_tick_threshold: int = 1         # bid1 偏离 >= N tick 触发 peg 重挂
+
+    # --- 未来扩展 (本期预留) ---
     max_pov_ratio: Optional[float] = None
     visible_lots: Optional[int] = None
 
 
 # ────────────────────────────────────────────────────────────────────── #
-#  Action(executor 发回给策略层的动作)
-# ────────────────────────────────────────────────────────────────────── #
 
 
 @dataclass
 class ExecAction:
-    """Executor 让策略层执行的一次动作."""
     op: str                       # "submit" | "cancel" | "cancel_all" | "feishu"
     vol: int = 0
     price: float = 0.0
-    direction: str = ""           # "buy" / "sell"
-    urgency_score: float = 0.0    # [0.0, 1.0]
-    kind: str = "open"            # "open" (send_order) / "close" (auto_close_position)
-    oid: object = None            # for cancel
-    note: str = ""                # for feishu payload
+    direction: str = ""
+    urgency_score: float = 0.0
+    kind: str = "open"
+    oid: object = None
+    note: str = ""
 
 
 # ────────────────────────────────────────────────────────────────────── #
-#  内部 state data
-# ────────────────────────────────────────────────────────────────────── #
+
+
+@dataclass
+class _PendingOrder:
+    vol: int
+    price: float   # 提交时的挂单价, 用于 peg 比较
 
 
 @dataclass
 class _State:
     state: EntryState = EntryState.IDLE
     target: int = 0
-    target_original: int = 0             # 超目标前
+    target_original: int = 0
     filled: int = 0
     direction: str = ""
     bar_start: Optional[datetime] = None
@@ -116,58 +121,31 @@ class _State:
     bottom_lots_actual: int = 0
     bottom_submitted: bool = False
     bottom_filled: bool = False
+    bottom_overdue_escalated: bool = False
     over_target_triggered: bool = False
     last_submit_ts: Optional[datetime] = None
-    force_slot_start: Optional[datetime] = None  # 当前 slot 起点
-    force_slot_crossed: bool = False             # 本 slot 是否已进 cross 段
-    # pending_oids: oid -> vol
+    force_slot_start: Optional[datetime] = None
+    force_slot_crossed: bool = False
+    # oid -> _PendingOrder
     pending_oids: dict = field(default_factory=dict)
-    # 本 slot 已成交的手数, 用于判断是否该开下一个 slot
-    slot_filled_lots: int = 0
+    # Feishu 节点去重
+    feishu_bottom_sent: bool = False
+    feishu_opp_first_sent: bool = False
+    feishu_force_sent: bool = False
 
 
-# ────────────────────────────────────────────────────────────────────── #
-#  Executor
 # ────────────────────────────────────────────────────────────────────── #
 
 
 class ScaledEntryExecutor:
-    """Bar 级分仓进场状态机.
-
-    用法:
-        executor = ScaledEntryExecutor(EntryParams(bottom_lots=2))
-
-        # 信号触发:
-        actions = executor.on_signal(
-            target=6, direction="buy",
-            now=datetime.now(), current_position=0,
-            forecast=9.0, bar_total_sec=3600,
-        )
-
-        # 每 tick:
-        actions = executor.on_tick(
-            now=now, last_price=price,
-            bid1=bid, ask1=ask, tick_size=5.0,
-            vwap_value=vwap, forecast=8.5, current_position=2,
-        )
-        for a in actions:
-            strategy.apply_entry_action(a)
-
-        # 成交回报:
-        executor.on_trade(oid, price, vol, now)
-
-        # 止损触发:
-        executor.on_stop_triggered(now)
-    """
+    """Bar 级分仓进场状态机 (audit v2)."""
 
     def __init__(self, params: EntryParams):
         self.p = params
         self.s = _State()
-        # For pricer-less mode: executor returns urgency score,策略层用 pricer.price_with_urgency_score 算价
-        # For testability: we compute price inline using pricer-like functions, 也接受注入
 
     # ================================================================== #
-    # 外部接口
+    # 外部接口 — 所有状态转换方法都返回 list[ExecAction]
     # ================================================================== #
 
     def on_signal(
@@ -180,20 +158,25 @@ class ScaledEntryExecutor:
         forecast: float,
         bar_total_sec: int = 3600,
     ) -> list[ExecAction]:
-        """新 bar 信号. Reconcile 到新 target, 重置状态."""
+        """新 bar 信号. Reconcile 到新 target, 重置状态.
+
+        如果当前有 pending_oids, 先 emit cancel actions 再重置。
+        """
         if direction not in ("buy", "sell"):
             return []
 
-        # Reconcile
-        abs_pos = abs(current_position)
-        if direction == "buy" and current_position < 0:
-            # 反向持仓, 不启动 entry (策略层应先平)
-            return []
-        if direction == "sell" and current_position > 0:
-            return []
+        # 先清理旧 pending (mid-bar signal or LOCKED → new signal)
+        actions = self._cancel_all_pending()
 
+        # Reconcile 方向
+        if direction == "buy" and current_position < 0:
+            return actions
+        if direction == "sell" and current_position > 0:
+            return actions
+
+        abs_pos = abs(current_position)
         if abs_pos >= target:
-            # 已满仓或超, 不入场; 等新 bar 重算
+            # 满仓或超, 不入场
             self.s = _State()
             self.s.state = EntryState.IDLE
             self.s.target = target
@@ -201,19 +184,18 @@ class ScaledEntryExecutor:
             self.s.direction = direction
             self.s.bar_start = now
             self.s.bar_total_sec = bar_total_sec
-            return []
+            return actions
 
-        # 从 IDLE/LOCKED 启动新 bar 窗口
         delta = target - abs_pos
         self.s = _State()
         self.s.state = EntryState.BOTTOM
-        self.s.target = delta                # 这个 bar 要建的 delta 仓位
+        self.s.target = delta
         self.s.target_original = delta
         self.s.direction = direction
         self.s.bar_start = now
         self.s.bar_total_sec = bar_total_sec
         self.s.bottom_lots_actual = self._compute_bottom_lots(delta)
-        return []
+        return actions
 
     def on_tick(
         self,
@@ -235,10 +217,11 @@ class ScaledEntryExecutor:
 
         elapsed = (now - self.s.bar_start).total_seconds()
 
-        # Bar 结束了, 该 executor 该退场
+        # Bar 结束: 清理所有 pending, 回 IDLE
         if elapsed >= self.s.bar_total_sec:
+            actions = self._cancel_all_pending()
             self.s.state = EntryState.IDLE
-            return []
+            return actions
 
         # 状态分发
         if self.s.state == EntryState.BOTTOM:
@@ -262,37 +245,34 @@ class ScaledEntryExecutor:
         return []
 
     def on_trade(self, oid, price: float, vol: int, now: datetime) -> None:
-        """成交回报. 更新 filled 和 pending_vol."""
+        """成交回报. 更新 filled."""
         if oid in self.s.pending_oids:
-            registered_vol = self.s.pending_oids[oid]
-            actual_vol = min(registered_vol, vol)
+            order = self.s.pending_oids[oid]
+            registered = order.vol
+            actual_vol = min(registered, vol)
             self.s.filled += actual_vol
-            self.s.slot_filled_lots += actual_vol
-            # 部分成交: pending 扣除本次, 全部成交才 pop
-            remaining_in_order = registered_vol - actual_vol
+            remaining_in_order = registered - actual_vol
             if remaining_in_order > 0:
-                self.s.pending_oids[oid] = remaining_in_order
+                order.vol = remaining_in_order
             else:
                 del self.s.pending_oids[oid]
-        else:
-            # 未登记的 oid (可能来自策略层其他路径), 忽略
-            pass
 
-        # 检查是否 bottom 成交
         if (
             self.s.state == EntryState.BOTTOM
             and self.s.filled >= self.s.bottom_lots_actual
         ):
             self.s.bottom_filled = True
 
-    def on_stop_triggered(self, now: datetime) -> None:
-        """止损触发. 锁定本 bar 剩余仓位."""
+    def on_stop_triggered(self, now: datetime) -> list[ExecAction]:
+        """止损触发. 清理 pending + 锁定本 bar."""
+        actions = self._cancel_all_pending()
         self.s.state = EntryState.LOCKED
+        return actions
 
-    def register_pending(self, oid, vol: int) -> None:
-        """策略层下单成功后调用, 登记 pending."""
+    def register_pending(self, oid, vol: int, price: float = 0.0) -> None:
+        """策略层下单成功后调用."""
         if oid is not None and vol > 0:
-            self.s.pending_oids[oid] = vol
+            self.s.pending_oids[oid] = _PendingOrder(vol=vol, price=price)
 
     def register_cancelled(self, oid) -> None:
         """策略层撤单后调用."""
@@ -312,11 +292,10 @@ class ScaledEntryExecutor:
 
     @property
     def pending_vol(self) -> int:
-        return sum(self.s.pending_oids.values())
+        return sum(o.vol for o in self.s.pending_oids.values())
 
     @property
     def remaining(self) -> int:
-        """target - filled - pending_vol (动态计算, 避免记账错位)."""
         return max(0, self.s.target - self.s.filled - self.pending_vol)
 
     @property
@@ -325,6 +304,7 @@ class ScaledEntryExecutor:
 
     @property
     def pending_oids(self) -> dict:
+        """只读视图, key=oid, value=_PendingOrder."""
         return dict(self.s.pending_oids)
 
     def progress_str(self) -> str:
@@ -334,21 +314,37 @@ class ScaledEntryExecutor:
         )
 
     # ================================================================== #
-    # 内部:compute_bottom_lots
+    # Helpers — cancel_all
+    # ================================================================== #
+
+    def _cancel_all_pending(self) -> list[ExecAction]:
+        """生成所有 pending 的 cancel action, 清 pending_oids."""
+        actions = []
+        for oid in list(self.s.pending_oids.keys()):
+            actions.append(ExecAction(op="cancel", oid=oid))
+        self.s.pending_oids.clear()
+        return actions
+
+    # ================================================================== #
+    # compute_bottom_lots / bottom_wait
     # ================================================================== #
 
     def _compute_bottom_lots(self, target: int) -> int:
-        """依据 params 计算底仓手数."""
         if target <= 0:
             return 0
         if self.p.bottom_lots is not None:
             return min(self.p.bottom_lots, target)
         if self.p.bottom_ratio is not None:
             return max(1, min(target, int(math.ceil(target * self.p.bottom_ratio))))
-        return min(2, target)  # 默认 2 手
+        return min(2, target)
+
+    def _effective_bottom_wait_sec(self) -> int:
+        """bar-aware 底仓等待. 短 bar 自动缩放 (bar*5%, clamp 到 [5, bottom_wait_sec])."""
+        scaled = max(5, self.s.bar_total_sec // 20)
+        return min(self.p.bottom_wait_sec, scaled)
 
     # ================================================================== #
-    # 内部:compute_urgency
+    # Urgency
     # ================================================================== #
 
     def _compute_urgency(
@@ -359,31 +355,29 @@ class ScaledEntryExecutor:
         last_price: float,
         vwap_value: float,
     ) -> float:
-        """动态 urgency 分数 [0, 1]."""
         w_time, w_deficit, w_signal, w_opp = self.p.urgency_weights
 
-        # 1) 时间压力
+        # 时间压力
         if self.s.state == EntryState.FORCE and self.s.force_slot_start is not None:
             slot_elapsed = (elapsed - (self.s.force_slot_start - self.s.bar_start).total_seconds())
             slot_progress = max(0.0, min(slot_elapsed / self.p.force_slot_sec, 1.0))
             time_pressure = 0.6 + 0.4 * slot_progress
         elif self.s.state == EntryState.BOTTOM and elapsed > self.p.bottom_deadline_sec:
-            # 底仓超时: urgency 基线 0.7+
             overdue_sec = elapsed - self.p.bottom_deadline_sec
             time_pressure = min(0.7 + overdue_sec / 300.0 * 0.3, 1.0)
         else:
             time_pressure = min(elapsed / self.s.bar_total_sec, 1.0)
 
-        # 2) 持仓缺口
         deficit = (self.s.target - self.s.filled) / self.s.target if self.s.target > 0 else 0
         deficit = max(0.0, min(deficit, 1.0))
 
-        # 3) 信号强度
         signal_strength = min(max(forecast, 0) / 10.0, 1.0)
 
-        # 4) 价格机会
         if vwap_value > 0 and last_price > 0:
-            diff_pct = (vwap_value - last_price) / vwap_value
+            if self.s.direction == "buy":
+                diff_pct = (vwap_value - last_price) / vwap_value
+            else:
+                diff_pct = (last_price - vwap_value) / vwap_value
             opportunity = max(0.0, min(diff_pct * 100, 1.0))
         else:
             opportunity = 0.0
@@ -404,11 +398,12 @@ class ScaledEntryExecutor:
         self, *, now, elapsed, last_price, bid1, ask1, tick_size,
         vwap_value, forecast,
     ) -> list[ExecAction]:
-        # T<60s: 等 M1 bar 形成
-        if elapsed < 60:
+        # 等待(bar-aware)
+        wait_sec = self._effective_bottom_wait_sec()
+        if elapsed < wait_sec:
             return []
 
-        # 底仓已成, 进入 OPPORTUNISTIC
+        # 底仓已成, 转 OPPORTUNISTIC
         if self.s.bottom_filled or self.s.filled >= self.s.bottom_lots_actual:
             self.s.state = EntryState.OPPORTUNISTIC
             return self._drive_opportunistic(
@@ -436,9 +431,38 @@ class ScaledEntryExecutor:
                 ))
                 self.s.bottom_submitted = True
                 self.s.last_submit_ts = now
+
+                if not self.s.feishu_bottom_sent:
+                    actions.append(ExecAction(
+                        op="feishu",
+                        note=f"**ENTRY BOTTOM** {vol}手 {self.s.direction} @ "
+                             f"{price:.1f} urgency={urgency:.2f}",
+                    ))
+                    self.s.feishu_bottom_sent = True
             return actions
 
-        # 已发底仓, 检查 peg (bid 漂移)
+        # BOTTOM 过期 (T > deadline): 撤老单 + 强制 resubmit 更高 urgency
+        if elapsed >= self.p.bottom_deadline_sec and not self.s.bottom_overdue_escalated:
+            actions.extend(self._cancel_all_pending())
+            vol_needed = self.s.bottom_lots_actual - self.s.filled
+            if vol_needed > 0:
+                price = self._price_from_urgency(
+                    self.s.direction, urgency, bid1, ask1, tick_size, last_price,
+                )
+                actions.append(ExecAction(
+                    op="submit", vol=vol_needed, price=price,
+                    direction=self.s.direction, urgency_score=urgency, kind="open",
+                ))
+                self.s.last_submit_ts = now
+                actions.append(ExecAction(
+                    op="feishu",
+                    note=f"**ENTRY BOTTOM OVERDUE** 强制 urgency={urgency:.2f} "
+                         f"@ {price:.1f}",
+                ))
+            self.s.bottom_overdue_escalated = True
+            return actions
+
+        # Peg check (bid1 漂移)
         actions.extend(self._peg_pending(
             bid1, ask1, tick_size, last_price, urgency,
         ))
@@ -448,19 +472,25 @@ class ScaledEntryExecutor:
         self, *, now, elapsed, last_price, bid1, ask1, tick_size,
         vwap_value, forecast,
     ) -> list[ExecAction]:
-        # FORCE 阶段启动
+        # FORCE 启动
         if elapsed >= self.p.force_start_sec:
             self.s.state = EntryState.FORCE
             self.s.force_slot_start = now
             self.s.force_slot_crossed = False
-            self.s.slot_filled_lots = 0
-            return self._drive_force(
+            actions: list[ExecAction] = []
+            if not self.s.feishu_force_sent:
+                actions.append(ExecAction(
+                    op="feishu",
+                    note=f"**ENTRY FORCE** 催单阶段 remaining={self.remaining}",
+                ))
+                self.s.feishu_force_sent = True
+            actions.extend(self._drive_force(
                 now=now, elapsed=elapsed, last_price=last_price,
                 bid1=bid1, ask1=ask1, tick_size=tick_size,
                 vwap_value=vwap_value, forecast=forecast,
-            )
+            ))
+            return actions
 
-        # 全部完成
         if self.remaining <= 0:
             return []
 
@@ -470,30 +500,33 @@ class ScaledEntryExecutor:
             last_price=last_price, vwap_value=vwap_value,
         )
 
-        # 超目标检查 (只触发一次)
-        self._check_over_target(last_price, vwap_value, forecast)
+        # 超目标 (不在 bar 末段触发,避免 catch-up 不及)
+        if elapsed < self.p.over_target_latest_sec:
+            self._check_over_target(last_price, vwap_value, forecast)
 
-        # bid 漂移 peg
+        # Peg 漂移
         actions.extend(self._peg_pending(
             bid1, ask1, tick_size, last_price, urgency,
         ))
 
-        # 发新单判断
+        # 发新单
         interval_ok = (
             self.s.last_submit_ts is None
             or (now - self.s.last_submit_ts).total_seconds() >= self.p.opp_min_submit_interval_sec
         )
         has_cap = len(self.s.pending_oids) < self.p.max_concurrent_pending
 
-        # 触发: price<VWAP 或 urgency > 0.5 (紧张时主动追)
-        cheap = (
-            vwap_value > 0 and last_price > 0
-            and (
-                (self.s.direction == "buy" and last_price < vwap_value)
-                or (self.s.direction == "sell" and last_price > vwap_value)
-            )
+        cheap = False
+        if vwap_value > 0 and last_price > 0:
+            if self.s.direction == "buy":
+                cheap = last_price < vwap_value
+            else:
+                cheap = last_price > vwap_value
+
+        should_submit = (
+            interval_ok and has_cap and self.remaining > 0
+            and (cheap or urgency > 0.5)
         )
-        should_submit = interval_ok and has_cap and self.remaining > 0 and (cheap or urgency > 0.5)
 
         if should_submit:
             price = self._price_from_urgency(
@@ -505,47 +538,49 @@ class ScaledEntryExecutor:
             ))
             self.s.last_submit_ts = now
 
+            if not self.s.feishu_opp_first_sent:
+                actions.append(ExecAction(
+                    op="feishu",
+                    note=f"**ENTRY OPP 首笔** @ {price:.1f} urgency={urgency:.2f}",
+                ))
+                self.s.feishu_opp_first_sent = True
+
         return actions
 
     def _drive_force(
         self, *, now, elapsed, last_price, bid1, ask1, tick_size,
         vwap_value, forecast,
     ) -> list[ExecAction]:
-        # 完成
         if self.remaining <= 0:
+            # 完成: cleanup + 回 IDLE
+            actions = self._cancel_all_pending()
             self.s.state = EntryState.IDLE
-            return []
-
-        actions: list[ExecAction] = []
-
-        # Slot 管理: 如果本 slot 已经成交 1+ 手, 开始下一 slot
-        if self.s.slot_filled_lots >= 1:
-            self.s.force_slot_start = now
-            self.s.force_slot_crossed = False
-            self.s.slot_filled_lots = 0
+            return actions
 
         if self.s.force_slot_start is None:
             self.s.force_slot_start = now
             self.s.force_slot_crossed = False
 
         slot_elapsed = (now - self.s.force_slot_start).total_seconds()
-        # 当前 slot 过期: 开新 slot
+
+        # Slot 过期 (时间驱动, 不看 fill): 开新 slot
         if slot_elapsed >= self.p.force_slot_sec:
             self.s.force_slot_start = now
             self.s.force_slot_crossed = False
-            slot_elapsed = 0
+            slot_elapsed = 0.0
 
         urgency = self._compute_urgency(
             elapsed=elapsed, forecast=forecast,
             last_price=last_price, vwap_value=vwap_value,
         )
 
-        # bid 漂移 peg (slot 前 2 min)
+        actions: list[ExecAction] = []
+
         if slot_elapsed < self.p.force_peg_sec:
+            # Peg 段
             actions.extend(self._peg_pending(
                 bid1, ask1, tick_size, last_price, urgency,
             ))
-            # 如果 slot 开头没有 pending, 发一个
             if len(self.s.pending_oids) == 0 and self.remaining > 0:
                 price = self._price_from_urgency(
                     self.s.direction, urgency, bid1, ask1, tick_size, last_price,
@@ -556,20 +591,19 @@ class ScaledEntryExecutor:
                 ))
                 self.s.last_submit_ts = now
         else:
-            # Slot 后 3 min: 穿盘口
+            # Cross 段
             if not self.s.force_slot_crossed:
-                # 撤所有 pending, 重挂 urgency 更高
-                for oid in list(self.s.pending_oids.keys()):
-                    actions.append(ExecAction(op="cancel", oid=oid))
-                # Urgency 提升到至少 0.75 (穿 7-8 tick)
-                cross_urgency = max(urgency, 0.75)
+                actions.extend(self._cancel_all_pending())
+                cross_urgency = max(urgency, self.p.force_cross_min_urgency)
                 if self.remaining > 0:
                     price = self._price_from_urgency(
-                        self.s.direction, cross_urgency, bid1, ask1, tick_size, last_price,
+                        self.s.direction, cross_urgency,
+                        bid1, ask1, tick_size, last_price,
                     )
                     actions.append(ExecAction(
                         op="submit", vol=1, price=price,
-                        direction=self.s.direction, urgency_score=cross_urgency, kind="open",
+                        direction=self.s.direction,
+                        urgency_score=cross_urgency, kind="open",
                     ))
                     self.s.last_submit_ts = now
                 self.s.force_slot_crossed = True
@@ -577,17 +611,44 @@ class ScaledEntryExecutor:
         return actions
 
     # ================================================================== #
-    # Helpers
+    # Peg + pricing
     # ================================================================== #
+
+    def _peg_pending(
+        self, bid1: float, ask1: float, tick_size: float,
+        last_price: float, urgency: float,
+    ) -> list[ExecAction]:
+        """bid1/ask1 漂移 peg_tick_threshold 以上时撤老单重挂."""
+        actions = []
+        if tick_size <= 0 or not self.s.pending_oids:
+            return actions
+
+        target_price = self._price_from_urgency(
+            self.s.direction, urgency, bid1, ask1, tick_size, last_price,
+        )
+
+        threshold = self.p.peg_tick_threshold * tick_size
+        for oid, order in list(self.s.pending_oids.items()):
+            if order.price <= 0:
+                continue  # 无原价信息, 跳过
+            drift = abs(target_price - order.price)
+            if drift >= threshold:
+                # 撤 + 重挂
+                actions.append(ExecAction(op="cancel", oid=oid))
+                actions.append(ExecAction(
+                    op="submit", vol=order.vol, price=target_price,
+                    direction=self.s.direction, urgency_score=urgency, kind="open",
+                ))
+                # 本地先删, 等策略层 register_cancelled / register_pending 覆盖
+                del self.s.pending_oids[oid]
+
+        return actions
 
     def _price_from_urgency(
         self, direction: str, urgency: float,
         bid1: float, ask1: float, tick_size: float, last_price: float,
     ) -> float:
-        """Inline 实现 pricing.price_with_urgency_score (供 executor 直接用,不依赖 pricer).
-
-        实际集成时策略层可选择用 pricer.price_with_urgency_score, 两者等价。
-        """
+        """Inline 实现, 和 pricing.price_with_urgency_score 等价."""
         urgency = max(0.0, min(1.0, urgency))
         ticks = int(round(urgency * self.p.max_entry_cross_ticks))
         has_book = bid1 > 0 and ask1 > 0
@@ -601,29 +662,13 @@ class ScaledEntryExecutor:
             if direction == "buy":
                 return ask1 + ticks * tick_size
             return bid1 - ticks * tick_size
-        # Fallback
         if direction == "buy":
             return last_price + ticks * tick_size
         return last_price - ticks * tick_size
 
-    def _peg_pending(
-        self, bid1: float, ask1: float, tick_size: float,
-        last_price: float, urgency: float,
-    ) -> list[ExecAction]:
-        """bid1 漂移时撤老单重挂.
-
-        简化策略: urgency=0 时只有 peg 才撤重挂 (挂单价 != 当前 bid1)。
-        urgency > 0 (已穿盘口) 时, 订单是在对手盘口往前追的, 不触发 peg。
-        """
-        # 目前简化为不主动 peg (避免过度撤重挂的复杂 bookkeeping)
-        # 真实 peg 需要追踪每个 oid 的挂单价和提交时 bid1 状态, 复杂度较高
-        # V1 版本依靠 escalator/force 机制自然更新, 这里保留方法供未来扩展
-        return []
-
     def _check_over_target(
         self, last_price: float, vwap_value: float, forecast: float,
     ) -> None:
-        """超目标加仓触发 (只一次)."""
         if not self.p.over_target_enabled:
             return
         if self.s.over_target_triggered:
@@ -631,8 +676,13 @@ class ScaledEntryExecutor:
         if vwap_value <= 0 or last_price <= 0:
             return
 
-        threshold = vwap_value * (1 - self.p.over_target_vwap_pct / 100)
-        condition_price = last_price < threshold if self.s.direction == "buy" else last_price > vwap_value * (1 + self.p.over_target_vwap_pct / 100)
+        if self.s.direction == "buy":
+            threshold = vwap_value * (1 - self.p.over_target_vwap_pct / 100)
+            condition_price = last_price < threshold
+        else:
+            threshold = vwap_value * (1 + self.p.over_target_vwap_pct / 100)
+            condition_price = last_price > threshold
+
         condition_signal = forecast > self.p.over_target_forecast
 
         if condition_price and condition_signal:

@@ -493,7 +493,9 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.output(f"[{action}][TICK] {reason}")
             self._exec_stop_at_tick(price, action, reason)
             if self._entry is not None:
-                self._entry.on_stop_triggered(datetime.now())
+                stop_actions = self._entry.on_stop_triggered(datetime.now())
+                for ea in stop_actions:
+                    self._apply_entry_action(ea)
             return
 
         # 移动止损 — 每分钟
@@ -505,7 +507,9 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.output(f"[{action}][M1] {reason}")
             self._exec_stop_at_tick(price, action, reason)
             if self._entry is not None:
-                self._entry.on_stop_triggered(datetime.now())
+                stop_actions = self._entry.on_stop_triggered(datetime.now())
+                for ea in stop_actions:
+                    self._apply_entry_action(ea)
 
     def _on_tick_vwap(self, tick: TickData):
         """VWAP执行: 买低于VWAP, 卖高于VWAP, 匹配QBase vwap_executor."""
@@ -773,7 +777,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 self._om.on_send(oid, a.vol, a.price,
                                  urgency="entry",
                                  direction=a.direction, kind=a.kind)
-                self._entry.register_pending(oid, a.vol)
+                self._entry.register_pending(oid, a.vol, price=a.price)
                 self.output(
                     f"[ENTRY] {a.direction} {a.vol}手 @ {a.price:.1f} "
                     f"urgency={a.urgency_score:.2f} state={self._entry.state.value}"
@@ -792,6 +796,9 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 self.cancel_order(oid)
                 self._entry.register_cancelled(oid)
                 self.order_id.discard(oid)
+
+        elif a.op == "feishu":
+            feishu("info", p.instrument_id, a.note)
 
     # ══════════════════════════════════════════════════════════════════════
     #  K线回调
@@ -826,12 +833,16 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.update_status_bar()
             return
 
-        # 撤挂单 (VWAP进行中不撤)
+        # 撤挂单 (VWAP进行中不撤) — 同步 executor pending_oids
         if not self._vwap_active:
             for oid in list(self.order_id):
                 self.cancel_order(oid)
+                if self._entry is not None:
+                    self._entry.register_cancelled(oid)
             for oid in self._om.check_timeouts(self.cancel_order):
                 self.output(f"[超时撤单] {oid}")
+                if self._entry is not None:
+                    self._entry.register_cancelled(oid)
 
         # 安全网: 处理上一根bar残留的pending
         if self._pending is not None:
@@ -841,17 +852,21 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                     self._vwap_cancel()
                     for oid in list(self.order_id):
                         self.cancel_order(oid)
+                        if self._entry is not None:
+                            self._entry.register_cancelled(oid)
                     self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
             elif action in ("OPEN", "ADD") and self._entry is not None:
                 # 2026-04-17: 残留 OPEN/ADD → 重新走 executor 入场
                 net_pos = self.get_position(self.params_map.instrument_id).net_position
                 bar_total = _freq_to_sec(self.params_map.kline_style)
-                self._entry.on_signal(
+                actions = self._entry.on_signal(
                     target=self._pending_target or 1, direction="buy",
                     now=datetime.now(), current_position=net_pos,
                     forecast=self.state_map.forecast, bar_total_sec=bar_total,
                 )
+                for ea in actions:
+                    self._apply_entry_action(ea)
                 signal_price = 0.0
             elif self._vwap_active:
                 self.output(f"[VWAP进行中] 忽略pending {action}")
@@ -1002,21 +1017,35 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                     self._vwap_cancel()
                     for oid in list(self.order_id):
                         self.cancel_order(oid)
+                        if self._entry is not None:
+                            self._entry.register_cancelled(oid)
                     self.output(f"[VWAP取消+撤单] 止损优先: {action}")
                 signal_price = self._execute(kline, action)
             elif action in ("OPEN", "ADD") and self._entry is not None:
                 # 2026-04-17: 入场路径走 ScaledEntryExecutor
-                bar_total = _freq_to_sec(self.params_map.kline_style)
-                self._entry.on_signal(
-                    target=self._pending_target or 1, direction="buy",
-                    now=datetime.now(), current_position=net_pos,
-                    forecast=forecast, bar_total_sec=bar_total,
-                )
-                feishu("info", self.params_map.instrument_id,
-                       f"**ENTRY 启动** {action}\n"
-                       f"目标: {self._pending_target}手 buy (delta 以持仓为准)\n"
-                       f"逻辑: {self._pending_reason}")
-                signal_price = 0.0
+                # 保证金预检(audit fix)
+                target_vol = self._pending_target or 1
+                acct = self._get_account()
+                cur_price = kline.close
+                if acct and cur_price * self._multiplier * target_vol * 0.15 > acct.available * 0.6:
+                    self.output(f"[ENTRY] 保证金不足, 跳过 {action}")
+                    feishu("error", self.params_map.instrument_id,
+                           f"**ENTRY 保证金不足** {action} 目标 {target_vol}手")
+                    signal_price = 0.0
+                else:
+                    bar_total = _freq_to_sec(self.params_map.kline_style)
+                    actions = self._entry.on_signal(
+                        target=target_vol, direction="buy",
+                        now=datetime.now(), current_position=net_pos,
+                        forecast=forecast, bar_total_sec=bar_total,
+                    )
+                    for ea in actions:
+                        self._apply_entry_action(ea)
+                    feishu("info", self.params_map.instrument_id,
+                           f"**ENTRY 启动** {action}\n"
+                           f"目标: {target_vol}手 buy (delta 以持仓为准)\n"
+                           f"逻辑: {self._pending_reason}")
+                    signal_price = 0.0
             elif not self._vwap_active:
                 # REDUCE / CLOSE 走原 VWAP 分批(暂时保留)
                 self._submit_vwap(kline, action)
@@ -1214,6 +1243,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self._vwap_cancel()
         for oid in list(self.order_id):
             self.cancel_order(oid)
+            if self._entry is not None:
+                self._entry.register_cancelled(oid)
 
         self._pending_reason = reason
         self._slip.set_signal_price(price)

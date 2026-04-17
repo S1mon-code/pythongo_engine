@@ -74,11 +74,11 @@ class TestStateTransitions:
         ex.on_signal(target=6, direction="buy", now=T0,
                      current_position=0, forecast=5.0)
         actions = ex.on_tick(**_base_tick_args(elapsed_sec=90))
-        # Should submit bottom (2 lots)
-        assert len(actions) == 1
-        assert actions[0].op == "submit"
-        assert actions[0].vol == 2
-        assert actions[0].direction == "buy"
+        # Should submit bottom (2 lots) + feishu notification
+        submits = [a for a in actions if a.op == "submit"]
+        assert len(submits) == 1
+        assert submits[0].vol == 2
+        assert submits[0].direction == "buy"
 
     def test_bottom_to_opp_after_fill(self):
         ex = ScaledEntryExecutor(_default_params())
@@ -453,5 +453,250 @@ class TestBarBoundary:
 
         # T = 3601 > bar_total_sec
         actions = ex.on_tick(**_base_tick_args(elapsed_sec=3601))
-        assert actions == []
         assert ex.state == EntryState.IDLE
+
+    def test_bar_end_cancels_pending(self):
+        """Audit fix: bar 结束时所有 pending 订单自动 emit cancel."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0, bar_total_sec=3600)
+        ex.s.state = EntryState.OPPORTUNISTIC
+        ex.register_pending(oid=1, vol=1, price=99.5)
+        ex.register_pending(oid=2, vol=1, price=99.5)
+
+        actions = ex.on_tick(**_base_tick_args(elapsed_sec=3601))
+        cancels = [a for a in actions if a.op == "cancel"]
+        assert len(cancels) == 2
+        assert ex.state == EntryState.IDLE
+
+
+class TestStopCancelEmission:
+    """Audit fix: on_stop_triggered 应该 emit cancel actions."""
+
+    def test_stop_returns_cancel_actions(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(oid=1, vol=2, price=99.5)
+        ex.register_pending(oid=2, vol=1, price=99.0)
+
+        actions = ex.on_stop_triggered(T0 + timedelta(seconds=120))
+        cancels = [a for a in actions if a.op == "cancel"]
+        assert len(cancels) == 2
+        assert {a.oid for a in cancels} == {1, 2}
+        assert ex.state == EntryState.LOCKED
+        # Pending cleared
+        assert len(ex.pending_oids) == 0
+
+
+class TestSignalCancelEmission:
+    """Audit fix: on_signal mid-bar 或 LOCKED 应该 emit cancel 清 pending."""
+
+    def test_new_signal_cancels_old_pending(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(oid=1, vol=2, price=99.5)
+        ex.s.state = EntryState.OPPORTUNISTIC
+
+        # New bar signal
+        actions = ex.on_signal(
+            target=4, direction="buy", now=T0 + timedelta(seconds=3600),
+            current_position=0, forecast=6.0,
+        )
+        cancels = [a for a in actions if a.op == "cancel"]
+        assert len(cancels) == 1
+        assert cancels[0].oid == 1
+        assert ex.state == EntryState.BOTTOM
+        # New state, empty pending
+        assert len(ex.pending_oids) == 0
+
+
+class TestBottomOverdue:
+    """Audit fix: BOTTOM 过期自动升级 urgency 重挂."""
+
+    def test_bottom_overdue_triggers_resubmit(self):
+        params = _default_params(bottom_deadline_sec=60)  # 短 deadline 方便测
+        ex = ScaledEntryExecutor(params)
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+
+        # T=90s: 首次挂底仓
+        actions = ex.on_tick(**_base_tick_args(elapsed_sec=90))
+        ex.register_pending(oid=1, vol=2, price=99.5)
+
+        # T=120s: 过了 deadline (60s 前就过了), 但首次还没触发过 — overdue escalation 应触发
+        # (实际 bottom_deadline_sec 在 params 里写 60, 所以 90s 就算 overdue)
+        # 测:第二次 on_tick 应该 cancel + resubmit
+        actions2 = ex.on_tick(**_base_tick_args(elapsed_sec=150))
+        cancels = [a for a in actions2 if a.op == "cancel"]
+        submits = [a for a in actions2 if a.op == "submit"]
+        assert len(cancels) == 1
+        assert len(submits) == 1
+        assert submits[0].urgency_score > 0.5   # escalated urgency
+
+    def test_bottom_overdue_triggers_only_once(self):
+        params = _default_params(bottom_deadline_sec=60)
+        ex = ScaledEntryExecutor(params)
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.on_tick(**_base_tick_args(elapsed_sec=90))
+        ex.register_pending(oid=1, vol=2, price=99.5)
+
+        # First overdue trigger
+        a1 = ex.on_tick(**_base_tick_args(elapsed_sec=150))
+        # Simulate resubmit
+        ex.register_pending(oid=2, vol=2, price=100.2)
+
+        # Second tick later — should NOT escalate again
+        a2 = ex.on_tick(**_base_tick_args(elapsed_sec=180))
+        overdue_cancels = [a for a in a2 if a.op == "cancel"]
+        overdue_submits = [a for a in a2 if a.op == "submit"]
+        # Peg logic may still fire, but no forced cancel-all this round
+        # Key: bottom_overdue_escalated = True now
+        assert ex.s.bottom_overdue_escalated
+
+
+class TestPegToBid1:
+    """Audit fix: _peg_pending 实现真正的 bid1 漂移重挂."""
+
+    def test_peg_cancels_and_resubmits_on_drift(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.state = EntryState.OPPORTUNISTIC
+        ex.s.filled = 2
+        ex.s.bottom_filled = True
+        # Pending挂在 99.5
+        ex.register_pending(oid=1, vol=1, price=99.5)
+        # bid1 移到 99.3, urgency=0 → peg bid1 → target=99.3
+        # drift = |99.3 - 99.5| = 0.2, tick=0.1 (我们用 5 tick size)
+        # Actually use bigger diff to exceed threshold
+        ex.s.last_submit_ts = T0  # bypass rate limit guard not needed for peg
+
+        actions = ex.on_tick(**_base_tick_args(
+            elapsed_sec=600, last_price=99.3, bid1=98.0, ask1=99.0,
+            tick_size=5.0, vwap=99.5,  # price<vwap so cheap triggers
+        ))
+        # Expect cancel (old oid=1) + resubmit
+        cancels = [a for a in actions if a.op == "cancel" and a.oid == 1]
+        submits = [a for a in actions if a.op == "submit"]
+        assert len(cancels) == 1
+        assert len(submits) >= 1   # peg resubmit + maybe opp submit
+
+    def test_peg_does_not_fire_when_price_stable(self):
+        """target price 无变化(urgency+盘口都稳定)时不 peg."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.state = EntryState.OPPORTUNISTIC
+        ex.s.filled = 2
+        ex.s.bottom_filled = True
+
+        # T=10s 计算 urgency 下的 target_price, 用它作为 pending 的 price
+        # urgency 会随 elapsed 变, 我们对齐相同 elapsed 验证不 peg
+        urgency = ex._compute_urgency(
+            elapsed=10, forecast=5.0, last_price=99.6, vwap_value=100.0,
+        )
+        target_price = ex._price_from_urgency(
+            "buy", urgency, bid1=99.5, ask1=100.0, tick_size=5.0, last_price=99.6,
+        )
+        ex.register_pending(oid=1, vol=1, price=target_price)
+        ex.s.last_submit_ts = T0 + timedelta(seconds=10)
+
+        # 相同 tick 上下文 — urgency 和 price 都不变, 不应触发 peg
+        actions = ex.on_tick(**_base_tick_args(
+            elapsed_sec=10, last_price=99.6, bid1=99.5, ask1=100.0,
+            tick_size=5.0, vwap=100.0,
+        ))
+        peg_cancels = [a for a in actions if a.op == "cancel" and a.oid == 1]
+        assert len(peg_cancels) == 0
+
+
+class TestForceSlotTimeDriven:
+    """Audit fix: FORCE slot 只按时间推进, 不看 fill."""
+
+    def test_slot_does_not_advance_on_fill(self):
+        """多次 fill 不会重置 slot 起点, slot 按时间推进 5 min."""
+        params = _default_params()
+        ex = ScaledEntryExecutor(params)
+        ex.on_signal(target=10, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.state = EntryState.FORCE
+        ex.s.filled = 3
+        ex.s.bottom_filled = True
+        ex.s.force_slot_start = T0 + timedelta(seconds=1800)
+
+        # T=1830 (30s into slot): peg submit
+        ex.on_tick(**_base_tick_args(elapsed_sec=1830, last_price=100.0))
+        # simulate fill
+        ex.register_pending(oid=10, vol=1, price=100.0)
+        ex.on_trade(10, 100.0, 1, T0 + timedelta(seconds=1840))
+
+        # Slot start should NOT have reset
+        assert ex.s.force_slot_start == T0 + timedelta(seconds=1800)
+
+    def test_slot_advances_on_time(self):
+        """到 force_slot_sec (300s) 后, slot 重置."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=10, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.state = EntryState.FORCE
+        ex.s.filled = 3
+        ex.s.bottom_filled = True
+        ex.s.force_slot_start = T0 + timedelta(seconds=1800)
+
+        # T=2101 (301s into slot): should start new slot
+        new_now = T0 + timedelta(seconds=2101)
+        ex.on_tick(**_base_tick_args(
+            now=new_now, last_price=100.0,
+        ))
+        assert ex.s.force_slot_start == new_now
+        assert not ex.s.force_slot_crossed
+
+
+class TestBarAwareBottomWait:
+    """Audit fix: BOTTOM 首次 wait 根据 bar_total_sec 自适应."""
+
+    def test_short_bar_scales_wait_down(self):
+        """bar_total=60 (M1) → wait = max(5, 60//20)=5s, 不是 60s."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=3, direction="buy", now=T0,
+                     current_position=0, forecast=5.0, bar_total_sec=60)
+        # T=10s 应该已经开始发底仓 (wait=5s)
+        actions = ex.on_tick(**_base_tick_args(elapsed_sec=10))
+        submits = [a for a in actions if a.op == "submit"]
+        assert len(submits) == 1
+
+    def test_long_bar_uses_full_wait(self):
+        """bar_total=3600 (H1) → wait = min(60, 3600//20=180) = 60s."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0, bar_total_sec=3600)
+        # T=30s: still waiting
+        a1 = ex.on_tick(**_base_tick_args(elapsed_sec=30))
+        assert len([a for a in a1 if a.op == "submit"]) == 0
+        # T=70s: submitted
+        a2 = ex.on_tick(**_base_tick_args(elapsed_sec=70))
+        assert len([a for a in a2 if a.op == "submit"]) == 1
+
+
+class TestPendingOidFormat:
+    """Audit fix: pending_oids 值现在是 _PendingOrder."""
+
+    def test_register_pending_stores_price(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(1, 2, price=99.5)
+        assert ex.pending_oids[1].vol == 2
+        assert ex.pending_oids[1].price == 99.5
+
+    def test_pending_vol_sum(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(1, 2, price=99.5)
+        ex.register_pending(2, 1, price=99.0)
+        assert ex.pending_vol == 3
+        assert ex.remaining == 3  # target 6 - filled 0 - pending 3

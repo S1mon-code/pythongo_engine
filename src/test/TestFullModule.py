@@ -376,12 +376,14 @@ class TestFullModule(BaseStrategy):
                 # 2026-04-17: 入场走 ScaledEntryExecutor
                 net_pos = self.get_position(p.instrument_id).net_position
                 bar_total = _freq_to_sec(p.kline_style)
-                self._entry.on_signal(
+                actions = self._entry.on_signal(
                     target=self._pending_target or 1, direction="buy",
                     now=datetime.now(), current_position=net_pos,
                     forecast=5.0,  # TestFullModule 无 forecast, 用默认
                     bar_total_sec=bar_total,
                 )
+                for ea in actions:
+                    self._apply_entry_action(ea)
                 signal_price = 0.0
             else:
                 signal_price = self._execute(kline, action)
@@ -496,12 +498,14 @@ class TestFullModule(BaseStrategy):
             if action in ("OPEN", "ADD") and self._entry is not None:
                 # 2026-04-17: 入场走 ScaledEntryExecutor
                 bar_total = _freq_to_sec(p.kline_style)
-                self._entry.on_signal(
+                actions = self._entry.on_signal(
                     target=self._pending_target or 1, direction="buy",
                     now=datetime.now(), current_position=net_pos,
                     forecast=5.0,
                     bar_total_sec=bar_total,
                 )
+                for ea in actions:
+                    self._apply_entry_action(ea)
                 signal_price = 0.0
             else:
                 signal_price = self._execute(kline, action)
@@ -566,7 +570,7 @@ class TestFullModule(BaseStrategy):
                 self._om.on_send(oid, a.vol, a.price,
                                  urgency="entry",
                                  direction=a.direction, kind=a.kind)
-                self._entry.register_pending(oid, a.vol)
+                self._entry.register_pending(oid, a.vol, price=a.price)
                 self.output(
                     f"[ENTRY] {a.direction} {a.vol}手 @ {a.price:.1f} "
                     f"urgency={a.urgency_score:.2f} state={self._entry.state.value}"
@@ -581,6 +585,8 @@ class TestFullModule(BaseStrategy):
                 self.cancel_order(oid)
                 self._entry.register_cancelled(oid)
                 self.order_id.discard(oid)
+        elif a.op == "feishu":
+            feishu("info", p.instrument_id, a.note)
 
     def _aggressive_price(self, price, direction, urgency: str = "normal"):
         """Spread-aware 限价定价 (替代 market=True).
