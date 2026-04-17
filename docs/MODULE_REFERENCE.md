@@ -38,13 +38,86 @@ from modules.position_sizing import calc_optimal_lots, apply_buffer
 | 飞书通知 | `modules/feishu.py` | 函数 | `feishu(action, symbol, msg)` 非阻塞 |
 | 状态持久化 | `modules/persistence.py` | 函数 | `save_state(data)` / `load_state()` |
 | 交易日检测 | `modules/trading_day.py` | 函数 | `get_trading_day()` → "20260402" |
-| 止损体系 | `modules/risk.py` | 函数 | `check_stops(...)` → (action, reason) |
+| 止损体系 | `modules/risk.py` | 类 | `RiskManager` — tick/M1 级止损 (2026-04-17 重构) |
 | 滑点记录 | `modules/slippage.py` | 类 | `SlippageTracker` |
 | 心跳监控 | `modules/heartbeat.py` | 类 | `HeartbeatMonitor` |
-| 订单超时 | `modules/order_monitor.py` | 类 | `OrderMonitor` |
+| 订单超时 | `modules/order_monitor.py` | 类 | `OrderMonitor` + escalator (Phase 3) |
 | 绩效追踪 | `modules/performance.py` | 类 | `PerformanceTracker` |
 | 换月提醒 | `modules/rollover.py` | 函数 | `check_rollover(id)` → (level, days) |
 | 仓位计算 | `modules/position_sizing.py` | 函数 | `calc_optimal_lots()` / `apply_buffer()` |
+| **Aggressive Pricer** | `modules/pricing.py` | 类 | `AggressivePricer` — 盘口追 bid/ask + urgency (Phase 3) |
+| **Rolling VWAP** | `modules/rolling_vwap.py` | 类 | `RollingVWAP` — 滚动 30min VWAP (Phase 4) |
+| **Scaled Entry** | `modules/execution.py` | 类 | `ScaledEntryExecutor` — 分仓进场状态机 (Phase 4) |
+
+### Phase 3: Aggressive Pricing (2026-04-17)
+
+```python
+from modules.pricing import AggressivePricer
+
+pricer = AggressivePricer(tick_size=5.0)
+# 每 tick:
+pricer.update(tick)   # 自动读 bid1/ask1/last_price, 滚动 spread
+
+# Urgency 分级版本:
+px = pricer.price("buy", urgency="passive")   # 挂 bid1
+px = pricer.price("buy", urgency="urgent")    # ask1 + 5 tick
+
+# 连续 urgency 分数版本 (ScaledEntryExecutor 使用):
+px = pricer.price_with_urgency_score("buy", urgency=0.75, max_ticks=10)  # 穿 ~8 tick
+```
+
+### Phase 4: Scaled Entry (2026-04-17)
+
+```python
+from modules.execution import EntryParams, ScaledEntryExecutor
+from modules.rolling_vwap import RollingVWAP
+
+# on_start:
+self._rvwap = RollingVWAP(window_seconds=1800)
+self._entry = ScaledEntryExecutor(EntryParams(
+    bottom_lots=2,             # 或 bottom_ratio=0.33 二选一
+    force_start_sec=1800,      # T=30min 进入 FORCE
+    force_slot_sec=300,        # 每 5 min 一个 force slot
+    force_peg_sec=120,         # slot 前 2 min peg
+    force_cross_min_urgency=0.75,   # cross 段最低 urgency
+    opp_min_submit_interval_sec=10,
+    max_concurrent_pending=3,
+    over_target_enabled=True,
+    over_target_vwap_pct=0.5,
+    over_target_forecast=5.0,
+    over_target_ratio=0.20,
+    # 未来扩展 (None=不启用):
+    max_pov_ratio=None,        # POV 参与率限制
+    visible_lots=None,         # Iceberg 冰山单
+))
+
+# on_signal (bar close 时调):
+actions = self._entry.on_signal(
+    target=6, direction="buy",
+    now=datetime.now(),
+    current_position=net_pos,
+    forecast=forecast,
+    bar_total_sec=3600,    # 1h bar
+)
+for a in actions:
+    self._apply_entry_action(a)    # 策略层执行 submit/cancel/feishu
+
+# on_tick (每 tick 驱动):
+actions = self._entry.on_tick(
+    now=datetime.now(),
+    last_price=tick.last_price,
+    bid1=self._pricer.bid1, ask1=self._pricer.ask1,
+    tick_size=self._pricer.tick_size,
+    vwap_value=self._rvwap.value,
+    forecast=forecast, current_position=net_pos,
+)
+
+# on_trade:
+claimed = self._entry.on_trade(oid, price, vol, now)  # 返回 bool
+
+# on_stop_triggered (止损触发时):
+stop_actions = self._entry.on_stop_triggered(datetime.now())
+```
 
 ---
 

@@ -1,5 +1,9 @@
 # PythonGO Engine — Architecture & Development Spec
 
+> **2026-04-17 重大更新**: 见 `docs/SESSION_2026_04_17.md` — tick 级止损 + Scaled Entry 入场引擎完整重构
+> 新模块 `pricing.py` / `rolling_vwap.py` / `execution.py` 构成 Phase 3-4 的核心
+> 134 pytest 单元测试, AL V8 + TestScaledEntry 已就绪模拟盘验证
+
 ## 项目总目标
 
 Simon在QBase_v2中开发的策略，由我人工转换为PythonGO格式的.py文件，部署到Windows无限易客户端实盘运行。每个策略/组合对应一个独立的.py文件。
