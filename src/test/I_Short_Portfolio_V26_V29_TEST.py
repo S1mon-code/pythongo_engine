@@ -17,6 +17,7 @@ from pythongo.utils import KLineGenerator
 
 # ── 模块导入 ──
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -701,7 +702,7 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
             self._slip.set_signal_price(price)
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=diff, price=price, order_direction="sell", market=True,
+                volume=diff, price=price, order_direction="sell", market=False,
             )
             if oid is not None:
                 self.order_ids.add(oid)
@@ -716,7 +717,7 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
             self._slip.set_signal_price(price)
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=abs(diff), price=price, order_direction="buy", market=True,
+                volume=abs(diff), price=price, order_direction="buy", market=False,
             )
             if oid is not None:
                 self.order_ids.add(oid)
@@ -792,11 +793,11 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
         self.order_ids.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
         self._slip.on_fill(trade.price, trade.volume,
-                           "buy" if "买" in str(trade.direction) else "sell")
+                           ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell"))
         p = self.params_map
         pos = self.get_position(p.instrument_id)
         actual = abs(pos.net_position) if pos else 0
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         if direction == "sell" and actual > 0:
             old_pos = max(0, actual - trade.volume)
             if old_pos > 0 and self.avg_price > 0:
@@ -821,3 +822,4 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
+        throttle_on_error(self, error)

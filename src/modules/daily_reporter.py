@@ -21,6 +21,7 @@ from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
 from modules.contract_info import get_multiplier
+from modules.error_handler import throttle_on_error
 from modules.feishu import feishu
 from modules.trading_day import get_trading_day
 
@@ -324,3 +325,4 @@ class DailyReporter(BaseStrategy):
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
+        throttle_on_error(self, error)

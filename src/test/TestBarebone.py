@@ -153,7 +153,7 @@ class TestBarebone(BaseStrategy):
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
                 volume=1, price=price,
-                order_direction="buy", market=True,
+                order_direction="buy", market=False,
             )
             if oid is not None:
                 self.order_id.add(oid)
@@ -168,7 +168,7 @@ class TestBarebone(BaseStrategy):
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
                 volume=actual, price=price,
-                order_direction="sell", market=True,
+                order_direction="sell", market=False,
             )
             if oid is not None:
                 self.order_id.add(oid)

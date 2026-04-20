@@ -716,7 +716,7 @@ class TestScaledEntry(BaseStrategy):
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
 
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         slip = self._slip.on_fill(trade.price, trade.volume, direction)
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")

@@ -23,6 +23,7 @@ from pythongo.utils import KLineGenerator
 
 # ── 模块导入 (和TestFullModule完全一致) ──
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -1038,7 +1039,7 @@ class IH_Long_4H_V20_Donchian_EMA_ATR(BaseStrategy):
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
 
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         slip = self._slip.on_fill(trade.price, trade.volume, direction)
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
@@ -1076,8 +1077,9 @@ class IH_Long_4H_V20_Donchian_EMA_ATR(BaseStrategy):
         super().on_order_cancel(order)
         self.order_id.discard(order.order_id)
         self._om.on_cancel(order.order_id)
-        self._twap.on_cancel(order.order_id, order.volume)
+        self._twap.on_cancel(order.order_id, order.cancel_volume)
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
+        throttle_on_error(self, error)

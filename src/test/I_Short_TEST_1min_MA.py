@@ -15,6 +15,7 @@ from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
 from modules.contract_info import get_multiplier
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -265,7 +266,7 @@ class I_Short_TEST_1min_MA(BaseStrategy):
             # 开空 / 加空
             oid = self.send_order(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=diff, price=price, order_direction="sell", market=True,
+                volume=diff, price=price, order_direction="sell", market=False,
             )
             if oid is not None:
                 self.order_id.add(oid)
@@ -278,7 +279,7 @@ class I_Short_TEST_1min_MA(BaseStrategy):
             # 减仓 / 平仓
             oid = self.auto_close_position(
                 exchange=p.exchange, instrument_id=p.instrument_id,
-                volume=abs(diff), price=price, order_direction="buy", market=True,
+                volume=abs(diff), price=price, order_direction="buy", market=False,
             )
             if oid is not None:
                 self.order_id.add(oid)
@@ -328,3 +329,4 @@ class I_Short_TEST_1min_MA(BaseStrategy):
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
+        throttle_on_error(self, error)

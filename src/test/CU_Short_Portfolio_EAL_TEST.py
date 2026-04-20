@@ -22,6 +22,7 @@ from pythongo.ui import BaseStrategy
 from pythongo.utils import KLineGenerator
 
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -649,11 +650,11 @@ class CU_Short_Portfolio_EAL_TEST(BaseStrategy):
         super().on_trade(trade, log=True)
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
-        self._slip.on_fill(trade.price, trade.volume, "buy" if "买" in str(trade.direction) else "sell")
+        self._slip.on_fill(trade.price, trade.volume, ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell"))
         p = self.params_map
         pos = self.get_position(p.instrument_id)
         actual = abs(pos.net_position) if pos else 0
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         if direction == "sell" and actual > 0:
             old_pos = max(0, actual - trade.volume)
             if old_pos > 0 and self.avg_price > 0:
@@ -680,3 +681,4 @@ class CU_Short_Portfolio_EAL_TEST(BaseStrategy):
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"[错误] {error}")
+        throttle_on_error(self, error)

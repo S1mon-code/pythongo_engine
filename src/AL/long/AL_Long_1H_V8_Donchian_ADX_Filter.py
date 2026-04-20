@@ -25,6 +25,7 @@ from pythongo.utils import KLineGenerator
 
 # ── 模块导入 ──
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -1617,7 +1618,15 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
 
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        # DIAG (2026-04-20): 验证 trade.direction 的实际运行时值.
+        # 源码 pythongo/classdef/trade.py 说是 TypeOrderDirection = Literal["0", "1"],
+        # 但旧代码全部写 `"买" in str(trade.direction)` 默认中文 —— 首次实盘成交后
+        # 看输出确认, 若是 "0"/"1" 或 "buy"/"sell" 要批量修 30 个文件.
+        self.output(f"[DIAG] direction={trade.direction!r} offset={trade.offset!r}")
+
+        # 健壮识别: cover "0"/"1"(原始), "buy"/"sell"(TypeOrderDIR), "买"/"卖"(旧代码假设)
+        raw = str(trade.direction).lower()
+        direction = "buy" if raw in ("buy", "0", "买") else "sell"
         slip = self._slip.on_fill(trade.price, trade.volume, direction)
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
@@ -1676,12 +1685,13 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.order_id.discard(order.order_id)
         self._om.on_cancel(order.order_id)
         # VWAP取消回调: 被撤的量加回remaining
-        if self._vwap_active and order.volume > 0:
+        if self._vwap_active and order.cancel_volume > 0:
             if self._vwap_direction == "buy":
-                self._vwap_remaining += order.volume
+                self._vwap_remaining += order.cancel_volume
             else:
-                self._vwap_remaining -= order.volume
+                self._vwap_remaining -= order.cancel_volume
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
+        throttle_on_error(self, error)

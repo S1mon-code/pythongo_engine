@@ -21,6 +21,7 @@ from pythongo.utils import KLineGenerator
 
 # ── 模块导入 ──
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -608,7 +609,7 @@ class TestFullModule(BaseStrategy):
             feishu("info", p.instrument_id, a.note)
 
     def _aggressive_price(self, price, direction, urgency: str = "normal"):
-        """Spread-aware 限价定价 (替代 market=True).
+        """Spread-aware 限价定价 (替代 market=False).
 
         urgency: passive(入场) / normal(减仓/信号CLOSE) / cross(VWAP) /
                  urgent(硬/移止损) / critical(熔断/权益/单日/FLATTEN)
@@ -867,14 +868,14 @@ class TestFullModule(BaseStrategy):
                 )
         slip = self._slip.on_fill(
             trade.price, trade.volume,
-            "buy" if "买" in str(trade.direction) else "sell",
+            ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell"),
         )
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
         p = self.params_map
         pos = self.get_position(p.instrument_id)
         actual = pos.net_position if pos else 0
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         if direction == "buy" and actual > 0:
             old_pos = max(0, actual - trade.volume)
             if old_pos > 0 and self.avg_price > 0:
@@ -900,3 +901,4 @@ class TestFullModule(BaseStrategy):
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
+        throttle_on_error(self, error)

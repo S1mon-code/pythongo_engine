@@ -27,9 +27,9 @@ EAL — Execution Algorithm Layer (PythonGO 版)
             if action:
                 vol, direction = action['volume'], action['direction']
                 if direction == "sell":
-                    self.send_order(..., volume=vol, order_direction="sell", market=True)
+                    self.send_order(..., volume=vol, order_direction="sell", market=False)
                 else:
-                    self.send_order(..., volume=vol, order_direction="buy", market=True)
+                    self.send_order(..., volume=vol, order_direction="buy", market=False)
 
     # 在H1/H4信号回调中，替代直接下单:
     if target != current:

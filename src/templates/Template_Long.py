@@ -28,6 +28,7 @@ from pythongo.utils import KLineGenerator
 
 # ── 模块导入 (不要改动) ──
 from modules.contract_info import get_multiplier, get_tick_size
+from modules.error_handler import throttle_on_error
 from modules.session_guard import SessionGuard
 from modules.feishu import feishu
 from modules.persistence import save_state, load_state
@@ -886,7 +887,7 @@ class Template_Long(BaseStrategy):                # ← CUSTOMIZE: 类名 = 文�
         self.order_id.discard(trade.order_id)
         self._om.on_fill(trade.order_id)
 
-        direction = "buy" if "买" in str(trade.direction) else "sell"
+        direction = ("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
         slip = self._slip.on_fill(trade.price, trade.volume, direction)
         if slip != 0:
             self.output(f"[滑点] {slip:.1f}ticks")
@@ -922,8 +923,9 @@ class Template_Long(BaseStrategy):                # ← CUSTOMIZE: 类名 = 文�
         super().on_order_cancel(order)
         self.order_id.discard(order.order_id)
         self._om.on_cancel(order.order_id)
-        self._twap.on_cancel(order.order_id, order.volume)
+        self._twap.on_cancel(order.order_id, order.cancel_volume)
 
     def on_error(self, error):
         self.output(f"[错误] {error}")
         feishu("error", self.params_map.instrument_id, f"**异常**: {error}")
+        throttle_on_error(self, error)
