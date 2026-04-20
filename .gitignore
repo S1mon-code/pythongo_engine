@@ -7,6 +7,10 @@ __pycache__/
 .claude/worktrees/
 .pytest_cache/
 
+# 实盘 log — 保留 StraLog.txt 作为历史证据, 后续新 log 不再 commit
+logs/*.txt
+!logs/StraLog.txt
+
 # PythonGO vendor SDK — commit Python source for reference,
 # exclude Windows binary (macOS/Linux can't load .pyd)
 pythongo/**/*.pyd
