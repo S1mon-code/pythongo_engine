@@ -65,9 +65,17 @@ class RiskManager:
     # 权益追踪
     # ------------------------------------------------------------------ #
 
-    def on_day_change(self, current_equity: float):
-        """交易日切换(21:00),重置当日起始权益."""
-        self.daily_start_eq = current_equity
+    def on_day_change(self, current_equity: float, position_profit: float = 0.0):
+        """交易日切换(21:00),重置当日起始权益.
+
+        position_profit: 当前持仓的未实现盈亏。过夜持仓场景下 current_equity
+        已经 bake 了未实现 P&L,直接用会让次日 daily_pnl_pct 基线错误
+        (例:16:00 浮盈 +5万过夜, 21:00 若直接以 balance 做 start_eq,
+         次日夜盘回吐 3万就会错误触发 daily_stop)。
+
+        Backward-compat: 默认 0.0 → 行为与旧签名一致。
+        """
+        self.daily_start_eq = current_equity - position_profit
 
     def update(self, equity: float):
         """每tick/bar更新权益,自动追踪peak."""

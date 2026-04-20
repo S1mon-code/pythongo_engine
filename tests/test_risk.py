@@ -274,6 +274,38 @@ class TestStateRoundTrip:
 # priority: hard stop must outrank trail stop when both could fire
 # ---------------------------------------------------------------------------
 
+class TestOnDayChangeOvernightCarry:
+    """2026-04-20: on_day_change 接受 position_profit, 剔除未实现盈亏."""
+
+    def test_no_position_profit_backward_compat(self):
+        """无持仓或未传 position_profit → 行为与旧签名一致."""
+        rm = RiskManager(capital=1_000_000)
+        rm.on_day_change(current_equity=1_050_000)
+        assert rm.daily_start_eq == 1_050_000
+
+    def test_position_profit_stripped_from_start_eq(self):
+        """过夜持仓:balance=1.05M, 未实现盈利 50K → start_eq=1.0M (realized)."""
+        rm = RiskManager(capital=1_000_000)
+        rm.on_day_change(current_equity=1_050_000, position_profit=50_000)
+        assert rm.daily_start_eq == 1_000_000
+
+    def test_unrealized_loss_also_stripped(self):
+        """浮亏同样剔除:balance=0.98M, 浮亏 -20K → start_eq=1.0M."""
+        rm = RiskManager(capital=1_000_000)
+        rm.on_day_change(current_equity=980_000, position_profit=-20_000)
+        assert rm.daily_start_eq == 1_000_000
+
+    def test_daily_pnl_pct_correct_after_overnight(self):
+        """Full scenario: 过夜持仓, 次日浮盈回吐, daily_pnl_pct 不应误触 daily_stop."""
+        rm = RiskManager(capital=1_000_000)
+        # 21:00 切换:balance=1.05M (含 50K 未实现), 传 position_profit=50K
+        rm.on_day_change(current_equity=1_050_000, position_profit=50_000)
+        # 次日夜盘行情回吐 30K → balance 降到 1.02M
+        rm.update(equity=1_020_000)
+        # daily_pnl = (1.02M - 1.0M) / 1.0M = +2%, NOT -2.86% 否则会误触 daily_stop
+        assert rm.daily_pnl_pct == pytest.approx(0.02, rel=1e-3)
+
+
 class TestPriority:
     def test_tick_hard_stop_fires_even_if_trail_would_also_fire(self):
         """Hard stop is tick-level, trail stop is minute-level.
