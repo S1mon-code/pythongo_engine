@@ -11,8 +11,5 @@ __pycache__/
 logs/*.txt
 !logs/StraLog.txt
 
-# PythonGO vendor SDK — commit Python source for reference,
-# exclude Windows binary (macOS/Linux can't load .pyd)
-pythongo/**/*.pyd
-pythongo/**/*.png
-pythongo/**/*.qss
+# PythonGO vendor SDK — 全部 commit 进 repo (含 .pyd Windows binary / .png / .qss),
+# 作为 SDK 完整快照. 2026-04-20 实盘验证完成后 Simon 要求把这些全部归档.

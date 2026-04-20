@@ -157,6 +157,7 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 ### PythonGO API 踩坑 (已源码审计对齐 2025.0925.1420)
 
 - **合约代码必须小写**:`al2607` / `i2509` / `cu2506` — **不是** `AL2607`。大写订阅无声失败(无 tick 进来,on_tick 永不触发),本地 log 只到 `策略初始化完毕` 就卡住 (2026-04-20 实盘确认)
+- **`_save()` 必须 null-guard**:`on_start` 中途失败(如合约代码错)时,`self._risk = RiskManager(...)` 可能没跑到 → `self._risk` 保持 None → `on_stop` 调 `_save()` → `NoneType.get_state()` AttributeError。所有策略的 `_save` 用 `state.update(self._risk.get_state() if self._risk is not None else {})` 保护 (2026-04-20 实盘 log L167-208 发现并修复,31 文件)
 - `get_account_fund_data("")` 会崩溃，必须先 `get_investor_data(1)` 拿investor_id
 - `self.output()` 替代 `print()`
 - **禁止** `market=True` 市价单 — SHFE 等市场拒单(2026-04-20 全队移除 25 处)
@@ -323,12 +324,20 @@ from modules.error_handler import throttle_on_error
 - ✅ market=False 全部报单"是否市价=否"
 - ✅ executor BOTTOM → OPP 状态转换流畅
 - ✅ SHFE offset=3 平今自动处理
-- 🐛 **踩坑**:合约代码必须小写 (`al2607` 不是 `AL2607`),大写订阅静默失败
+- 🐛 **踩坑 1**:合约代码必须小写 (`al2607` 不是 `AL2607`),大写订阅静默失败
+
+**第二次实盘 + 暂停恢复测试** (13:43-13:49 on 2026-04-20)
+- ✅ 暂停 → 重开,`bar_count` 从 20 → 21 续接,`last_exit_bar_ts` 跨重启保留
+- ✅ overnight fix `[DAY_CHANGE_TEST]` 双参数调用正常
+- ✅ 暂停期间 broker 延迟成交,on_trade 正确处理
+- 🐛 **踩坑 2**:`_save()` 在 `_risk=None` 时 AttributeError(on_start 中途失败场景)→ 31 文件加 null-guard
 
 **测试 & 文档**
 - 新增 `TestAllFixes.py`: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
 - 新增 `docs/SESSION_2026_04_20.md` 完整 session 记录
+- 保留 `logs/StraLog.txt` 作历史证据,后续新 log gitignore
 - **pytest**: 146 → **154** passing (+8 error_handler tests)
+- **commits**: 15 个 (`3a262d0` → `2e49cf5`)
 
 ### 2026-04-17 — 止损重构 + Scaled Entry
 

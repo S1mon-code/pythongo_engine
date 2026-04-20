@@ -62,10 +62,15 @@ from pythongo.utils import KLineGenerator, Scheduler
 - **on_error 流控**:新增 `modules/error_handler.py` + 32 文件接入 `throttle_on_error` ✓
 - **AL V8 startup eval 4 分支**:开/平/减/持 覆盖隔夜重启完整场景 ✓
 - **A+ overnight fix 全队 propagate**:58 处 `on_day_change(balance)` → `on_day_change(balance, position_profit)` ✓
+- **`_save()` null-guard**(commit `cba9b0b`,实盘 log 发现):31 文件加 `if self._risk is not None` 保护,避免 on_start 中途失败时 `_risk=None` 的 AttributeError
 
-**验证**:`src/test/TestAllFixes.py` 8 项 smoke test + pytest 154/154 绿 + 实盘 11:23 run 全部正常 ✓
+**实盘双轮验证**(2026-04-20):
+- **第一轮 11:23**: Bug B direction 结案 + market=False 生效 + executor 状态机正常
+- **第二轮 13:43-13:49 暂停恢复**: `bar_count 20→21` 续接 + `last_exit_bar_ts` 跨重启保留 + overnight fix `[DAY_CHANGE_TEST]` 双参数生效
 
-**13 commits**:`3a262d0` → `f4bbb2a`
+**验证**:`src/test/TestAllFixes.py` 8 项 smoke test + pytest 154/154 绿 ✓
+
+**15 commits**:`3a262d0` → `2e49cf5`
 
 ---
 
