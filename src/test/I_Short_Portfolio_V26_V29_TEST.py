@@ -365,7 +365,7 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
             if self._risk.peak_equity == p.capital:
                 self._risk.update(acct.balance)
             if self._risk.daily_start_eq == p.capital:
-                self._risk.on_day_change(acct.balance)
+                self._risk.on_day_change(acct.balance, acct.position_profit)
 
         pos = self.get_position(p.instrument_id)
         actual = pos.net_position if pos else 0
@@ -407,7 +407,7 @@ class I_Short_Portfolio_V26_V29_TEST(BaseStrategy):
             if td != self._current_td and self._current_td:
                 acct = self._get_account()
                 if acct:
-                    self._risk.on_day_change(acct.balance)
+                    self._risk.on_day_change(acct.balance, acct.position_profit)
                 self._perf.on_day_change()
                 self._today_trades = []
                 self._current_td = td

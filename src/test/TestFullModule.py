@@ -246,7 +246,7 @@ class TestFullModule(BaseStrategy):
             if self._risk.peak_equity == p.capital:
                 self._risk.update(acct.balance)
             if self._risk.daily_start_eq == p.capital:
-                self._risk.on_day_change(acct.balance)
+                self._risk.on_day_change(acct.balance, acct.position_profit)
 
         # 信任broker持仓
         pos = self.get_position(p.instrument_id)
@@ -319,7 +319,7 @@ class TestFullModule(BaseStrategy):
             if td != self._current_td and self._current_td:
                 acct = self._get_account()
                 if acct:
-                    self._risk.on_day_change(acct.balance)  # 重置daily_start_eq
+                    self._risk.on_day_change(acct.balance, acct.position_profit)  # 重置daily_start_eq
                 self._perf.on_day_change()  # 重置每日PnL
                 self._today_trades = []
                 self._current_td = td

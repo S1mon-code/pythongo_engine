@@ -235,7 +235,7 @@ class CU_Short_5M_V26_EAL_TEST(BaseStrategy):
         acct = self._get_account()
         if acct:
             if self._risk.peak_equity == p.capital: self._risk.update(acct.balance)
-            if self._risk.daily_start_eq == p.capital: self._risk.on_day_change(acct.balance)
+            if self._risk.daily_start_eq == p.capital: self._risk.on_day_change(acct.balance, acct.position_profit)
         pos = self.get_position(p.instrument_id)
         actual = abs(pos.net_position) if pos else 0
         self.state_map.net_pos = -actual
@@ -262,7 +262,7 @@ class CU_Short_5M_V26_EAL_TEST(BaseStrategy):
             if td != self._current_td and self._current_td:
                 acct = self._get_account()
                 if acct:
-                    self._risk.on_day_change(acct.balance)
+                    self._risk.on_day_change(acct.balance, acct.position_profit)
                 self._perf.on_day_change()
                 self._today_trades = []
                 self._current_td = td
@@ -485,6 +485,7 @@ class CU_Short_5M_V26_EAL_TEST(BaseStrategy):
     def on_order_cancel(self, order: OrderData):
         super().on_order_cancel(order); self.order_id.discard(order.order_id); self._om.on_cancel(order.order_id)
 
-    def on_error(self, error): self.output(f"[错误] {error}")
+    def on_error(self, error):
+        self.output(f"[错误] {error}")
         from modules.error_handler import throttle_on_error
         throttle_on_error(self, error)
