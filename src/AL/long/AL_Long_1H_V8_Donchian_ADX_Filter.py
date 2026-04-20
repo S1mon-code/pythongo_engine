@@ -367,7 +367,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._entry = ScaledEntryExecutor(EntryParams(bottom_lots=2))
         self._rvwap_prev_vol = 0
 
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)

@@ -24,16 +24,27 @@ from modules.contract_info import get_sessions
 class SessionGuard:
     """交易时段守卫，判断当前是否在交易时段内并提供收盘提示。"""
 
-    def __init__(self, instrument_id: str, flatten_minutes: int = 5, sim_24h: bool = False):
+    def __init__(
+        self,
+        instrument_id: str,
+        flatten_minutes: int = 5,
+        sim_24h: bool = False,
+        open_grace_sec: int = 0,
+    ):
         """
         Args:
             instrument_id: 合约代码，如 "i2609"，用于查询交易时段。
             flatten_minutes: 距每节收盘多少分钟开始触发清仓（默认 5 分钟）。
             sim_24h: True 时跳过时段检查，适用于24小时模拟盘。
+            open_grace_sec: 开盘后 N 秒内 should_trade 仍返 False (避开 broker
+                开盘瞬间 rush 导致的拒单). 默认 0 (不启用). 生产策略推荐 30.
+                影响所有 session 起点 (早盘 09:00, 茶歇后 10:30, 午盘 13:30,
+                夜盘 21:00). (2026-04-20 新增)
         """
         self._instrument_id = instrument_id
         self._flatten_minutes = flatten_minutes
         self._sim_24h = sim_24h
+        self._open_grace_sec = max(0, int(open_grace_sec))
         self._sessions = get_sessions(instrument_id)
 
     # ------------------------------------------------------------------
@@ -41,12 +52,48 @@ class SessionGuard:
     # ------------------------------------------------------------------
 
     def should_trade(self) -> bool:
-        """当前时刻是否在交易时段内（盘前清仓已全局禁用，不再阻止信号生成）。"""
+        """当前时刻是否允许交易.
+
+        False 当: 周末 / 非交易时段 / session 开始后 open_grace_sec 秒内.
+        盘前清仓已全局禁用。
+        """
         if self._sim_24h:
             return True
         if self._is_weekend():
             return False
-        return self._in_session()
+        if not self._in_session():
+            return False
+        # 开盘后 grace period 保护: 避开 broker 开盘瞬间 rush
+        if self._open_grace_sec > 0:
+            elapsed = self.seconds_since_session_start()
+            if 0 <= elapsed < self._open_grace_sec:
+                return False
+        return True
+
+    def seconds_since_session_start(self) -> int:
+        """返回距离当前 session 开始的秒数 (不在 session 返 -1).
+
+        用途: 策略可根据开盘后秒数决定是否延迟执行某些操作.
+        """
+        now = datetime.now()
+        cur_sec = now.hour * 3600 + now.minute * 60 + now.second
+
+        for (start_h, start_m), (end_h, end_m) in self._sessions:
+            start_sec = start_h * 3600 + start_m * 60
+            end_sec = end_h * 3600 + end_m * 60
+
+            if start_sec <= end_sec:
+                # 普通时段
+                if start_sec <= cur_sec < end_sec:
+                    return cur_sec - start_sec
+            else:
+                # 跨午夜时段: 21:00-01:00
+                if cur_sec >= start_sec:
+                    return cur_sec - start_sec
+                if cur_sec < end_sec:
+                    return cur_sec + 86400 - start_sec
+
+        return -1
 
     def should_flatten(self) -> bool:
         """当前时刻是否处于清仓区间（在某节收盘前 flatten_minutes 分钟内且仍在时段内）。"""

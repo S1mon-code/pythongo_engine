@@ -208,7 +208,7 @@ class TestScaledEntry(BaseStrategy):
         self._rvwap = RollingVWAP(window_seconds=1800)
         self._entry = ScaledEntryExecutor(EntryParams(bottom_lots=p.bottom_lots))
 
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)

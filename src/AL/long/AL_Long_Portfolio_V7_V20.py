@@ -364,7 +364,7 @@ class AL_Long_Portfolio_V7_V20(BaseStrategy):
         p = self.params_map
         self._multiplier = 5  # AL: 5吨/手
 
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)

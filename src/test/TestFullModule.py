@@ -207,7 +207,7 @@ class TestFullModule(BaseStrategy):
         self._rvwap_prev_vol = 0
 
         # 初始化需要instrument_id的模块
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)

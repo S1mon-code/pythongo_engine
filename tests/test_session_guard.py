@@ -121,6 +121,95 @@ class TestFlattenZone:
             assert self.guard.should_flatten() is expected
 
 
+class TestOpenGrace:
+    """2026-04-20: open_grace_sec — 开盘后 N 秒内 should_trade 返 False,
+    避开 broker 开盘瞬间 rush."""
+
+    def test_no_grace_default(self):
+        """默认 open_grace_sec=0,09:00 立即可交易."""
+        guard = SessionGuard("al2607", sim_24h=False)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 0, 0)):
+            assert guard.should_trade() is True
+
+    def test_grace_30s_blocks_first_29s(self):
+        guard = SessionGuard("al2607", sim_24h=False, open_grace_sec=30)
+        # 09:00:00 - 09:00:29 期间拒绝
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 0, 0)):
+            assert guard.should_trade() is False
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 0, 29)):
+            assert guard.should_trade() is False
+        # 09:00:30 之后允许
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 0, 30)):
+            assert guard.should_trade() is True
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 5, 0)):
+            assert guard.should_trade() is True
+
+    def test_grace_applies_to_tea_break_end(self):
+        """10:30 茶歇后也需要 grace."""
+        guard = SessionGuard("al2607", sim_24h=False, open_grace_sec=30)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 10, 30, 15)):
+            assert guard.should_trade() is False  # 茶歇后 15s,仍在 grace
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 10, 30, 31)):
+            assert guard.should_trade() is True
+
+    def test_grace_applies_to_afternoon_open(self):
+        """13:30 午盘开盘 grace."""
+        guard = SessionGuard("al2607", sim_24h=False, open_grace_sec=30)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 13, 30, 10)):
+            assert guard.should_trade() is False
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 13, 30, 45)):
+            assert guard.should_trade() is True
+
+    def test_grace_applies_to_night_open(self):
+        """21:00 夜盘开盘 grace (跨午夜 session 起点)."""
+        guard = SessionGuard("al2607", sim_24h=False, open_grace_sec=30)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 21, 0, 5)):
+            assert guard.should_trade() is False
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 21, 0, 31)):
+            assert guard.should_trade() is True
+
+    def test_grace_does_not_affect_midnight_crossover(self):
+        """跨午夜 session 中段 (00:30) grace 不应再次触发."""
+        guard = SessionGuard("al2607", sim_24h=False, open_grace_sec=30)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 0, 30, 0)):
+            # 00:30 距夜盘 21:00 已 3.5 小时,远超 grace
+            assert guard.should_trade() is True
+
+    def test_seconds_since_session_start_normal(self):
+        guard = SessionGuard("al2607", sim_24h=False)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 9, 5, 30)):
+            # 距 09:00 开盘 5min30s = 330s
+            assert guard.seconds_since_session_start() == 330
+
+    def test_seconds_since_session_start_out_of_session(self):
+        guard = SessionGuard("al2607", sim_24h=False)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 10, 20, 0)):
+            # 茶歇中,不在任何 session
+            assert guard.seconds_since_session_start() == -1
+
+    def test_seconds_since_night_session_across_midnight(self):
+        """21:00-01:00 夜盘, 00:30 时已 3.5 小时."""
+        guard = SessionGuard("al2607", sim_24h=False)
+        with patch("modules.session_guard.datetime",
+                   now=lambda: datetime(2026, 4, 21, 0, 30, 0)):
+            # 距 21:00 开盘 3h30min = 12600s
+            assert guard.seconds_since_session_start() == 12600
+
+
 class TestStatus:
     """get_status 字符串."""
 

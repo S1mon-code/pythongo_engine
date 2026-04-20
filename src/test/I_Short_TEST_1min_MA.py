@@ -85,7 +85,7 @@ class I_Short_TEST_1min_MA(BaseStrategy):
     def on_start(self):
         p = self.params_map
         self._multiplier = get_multiplier(p.instrument_id)
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
 
         self.kline_generator = KLineGenerator(
             callback=self.callback,

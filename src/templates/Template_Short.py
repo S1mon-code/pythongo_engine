@@ -273,7 +273,7 @@ class Template_Short(BaseStrategy):               # ← CUSTOMIZE: 类名 = 文�
         p = self.params_map
         self._multiplier = get_multiplier(p.instrument_id)
 
-        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h)
+        self._guard = SessionGuard(p.instrument_id, p.flatten_minutes, sim_24h=p.sim_24h, open_grace_sec=30)
         self._slip = SlippageTracker(p.instrument_id)
         self._hb = HeartbeatMonitor(p.instrument_id)
         self._perf = PerformanceTracker(p.instrument_id)

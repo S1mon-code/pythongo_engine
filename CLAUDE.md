@@ -334,18 +334,34 @@ from modules.error_handler import throttle_on_error
 - ✅ 暂停期间 broker 延迟成交,on_trade 正确处理
 - 🐛 **踩坑 2**:`_save()` 在 `_risk=None` 时 AttributeError(on_start 中途失败场景)→ 31 文件加 null-guard
 
-**Session 边界修复** (Simon 指出 10:15-10:30 茶歇)
+**Session 边界修复** (Simon 指出 10:15-10:30 茶歇 + 开盘 grace)
 - 🐛 **踩坑 3**:`contract_info.py` 70 个非 CFFEX 品种早盘都是连续 `((9, 0), (11, 30))`,漏了 **10:15-10:30 茶歇**。茶歇期间 broker 拒单但策略以为在 session → errCode 0004 刷屏
 - 修:批量拆成 `((9, 0), (10, 15)), ((10, 30), (11, 30))`(81 处替换)
 - 同时修 `SessionGuard._in_session` 边界:`start <= cur <= end` → `start <= cur < end`(`[start, end)` 区间),与 `contract_info._is_time_in_session` 对齐
 - **37 新 pytest** 覆盖茶歇/夜盘跨午夜/CFFEX 无茶歇/sim_24h/flatten_zone
 
+**开盘后 grace 保护** (Simon 指出"开盘后再挂单")
+- 新增 `SessionGuard(open_grace_sec=30)` 参数:session 开始后 30 秒内 `should_trade()` 返 False
+- 避开 broker 开盘瞬间 rush 导致的 errCode 0004 / 系统繁忙拒单
+- 新增 `seconds_since_session_start()` helper(策略层可查距 session 开始多少秒)
+- 适用所有 session 起点:09:00 / 10:30(茶歇后)/ 13:30 / 21:00
+- **32 个策略全队 SessionGuard 实例化加 `open_grace_sec=30`**(默认 0 向后兼容)
+- **9 新 pytest** 覆盖 grace 边界 / 茶歇后 grace / 午盘 grace / 跨午夜 session 中段不触发 grace
+
+**完整品种表**(88 个品种,2026-04-20 Simon 确认):
+- CFFEX 8 个(if/ih/ic/im/ts/tf/t/tl):连续 09:30-11:30 + 13:00-15:00/15:15,无茶歇无夜盘
+- INE 5 个(sc/nr/lu/bc/ec):常规早盘茶歇 + 夜盘(sc 到 02:30, bc 到 01:00, nr/lu 到 23:00, ec 无夜盘)
+- SHFE 20 个:常规早盘茶歇 + 夜盘(有色 cu/al/zn/pb/ni/sn/ss/ao/ad 到 01:00, 贵金属 au/ag 到 02:30, 黑色 rb/hc/fu/bu/ru/br/sp/op 到 23:00, wr 无夜盘)
+- DCE 23 个:常规早盘茶歇 + 夜盘(17 个到 23:00, rr/lg/jd/lh/bb/fb 无夜盘)
+- CZCE 27 个:常规早盘茶歇 + 夜盘(17 个到 23:00, sm/sf/ap/cj/wh/pm/ri/lr/jr/rs 无夜盘)
+- GFEX 5 个(si/lc/ps/pt/pd):常规早盘茶歇,全部无夜盘
+
 **测试 & 文档**
 - 新增 `TestAllFixes.py`: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
 - 新增 `docs/SESSION_2026_04_20.md` 完整 session 记录
 - 保留 `logs/StraLog.txt` 作历史证据,后续新 log gitignore
-- **pytest**: 146 → **191** passing (+8 error_handler + 37 session_guard)
-- **commits**: 17 个 (`3a262d0` → 最新)
+- **pytest**: 146 → **200** passing (+8 error_handler + 46 session_guard)
+- **commits**: 18+ 个 (`3a262d0` → 最新)
 
 ### 2026-04-17 — 止损重构 + Scaled Entry
 
