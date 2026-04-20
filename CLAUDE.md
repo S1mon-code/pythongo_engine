@@ -156,6 +156,7 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 
 ### PythonGO API 踩坑 (已源码审计对齐 2025.0925.1420)
 
+- **合约代码必须小写**:`al2607` / `i2509` / `cu2506` — **不是** `AL2607`。大写订阅无声失败(无 tick 进来,on_tick 永不触发),本地 log 只到 `策略初始化完毕` 就卡住 (2026-04-20 实盘确认)
 - `get_account_fund_data("")` 会崩溃，必须先 `get_investor_data(1)` 拿investor_id
 - `self.output()` 替代 `print()`
 - **禁止** `market=True` 市价单 — SHFE 等市场拒单(2026-04-20 全队移除 25 处)
