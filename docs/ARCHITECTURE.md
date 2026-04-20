@@ -1,14 +1,18 @@
 # PythonGO Engine — Architecture & Development Spec
 
-> **2026-04-20 Fleet-wide 修复 + 源码审计 + 实盘验证**: 见 `docs/SESSION_2026_04_20.md`
+> **2026-04-20 Fleet-wide 修复 + 源码审计 + 实盘验证 + Session 精修**: 见 `docs/SESSION_2026_04_20.md`
 > - PythonGO V2 源码逐文件审计 → `docs/pythongo/` 8 md 共 3135 行
 > - 新模块 `error_handler.py`(0004 自动流控)
 > - AL V8 集成崩溃恢复 + 首 tick 信号评估(4 分支决策:开/平/减/持)+ overnight fix
 > - Fleet-wide 修 30 文件:Bug A (`order.volume` → `cancel_volume`) + Bug B (`direction` 健壮识别) + `market=False`
 > - A+ overnight fix 全队 propagate 58 处(所有隔夜策略 daily_stop 基线正确)
+> - **`_save` null-guard** 31 文件(实盘 log 发现 `_risk=None` AttributeError)
+> - **10:15-10:30 茶歇拆分** 70 非 CFFEX 品种 + `SessionGuard` 边界 `[start, end)` 对齐
+> - **开盘后 30 秒 grace** 32 策略 + `seconds_since_session_start()` helper
+> - **88 品种时段表**完整审计(CFFEX 8 / INE 5 / SHFE 20 / DCE 23 / CZCE 27 / GFEX 5)
 > - 新 smoke test `TestAllFixes.py`(高频信号覆盖 8 项修复)
-> - **154 pytest** 单元测试(134 → 154,+20)
-> - **实盘 11:23 run 验证**:Bug B direction=`'0'/'1'` 结案,market=False 全部生效
+> - **200 pytest** 单元测试(134 → 200,+66)
+> - **实盘 11:23 + 13:43 两轮验证**:Bug B direction=`'0'/'1'` 结案,暂停恢复 bar_count 20→21 续接
 > - 🐛 **实盘坑**:合约代码必须小写(`al2607`,不是 `AL2607`)
 >
 > **2026-04-17 重大更新**: 见 `docs/SESSION_2026_04_17.md` — tick 级止损 + Scaled Entry 入场引擎完整重构

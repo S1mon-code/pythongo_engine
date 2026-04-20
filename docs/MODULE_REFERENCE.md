@@ -1,9 +1,16 @@
 # PythonGO Engine — 模块参考手册
 
-> **2026-04-20 更新**: 新增 `modules/error_handler.py`(0004 流控),更新至 PythonGO 2025.0925.1420 源码对齐。
+> **2026-04-20 更新**:
+> - 新增 `modules/error_handler.py`(0004 流控)
+> - 更新至 PythonGO 2025.0925.1420 源码对齐
+> - `contract_info.py` 70 个非 CFFEX 商品品种早盘拆分 10:15-10:30 茶歇
+> - `SessionGuard` 新增 `open_grace_sec=30` 开盘保护 + `seconds_since_session_start()` helper
+> - `risk.py` 的 `on_day_change(balance, position_profit=0.0)` 剔除过夜浮盈
+> - `execution.py` (ScaledEntryExecutor) 新增 `get_state/load_state/force_lock` 崩溃恢复
+>
 > 详见 `docs/SESSION_2026_04_20.md` + `docs/pythongo/` 8 md 完整 API 对照。
 
-所有模块已在无限易模拟盘测试通过 (2026-04-02,2026-04-20 全队修复后 pytest 154/154 绿)。
+所有模块已在无限易模拟盘测试通过 (2026-04-02,2026-04-20 全队修复后 pytest **200/200 绿**,2 轮实盘 smoke test 确认)。
 
 ## 部署位置
 
