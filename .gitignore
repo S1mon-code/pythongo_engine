@@ -2,6 +2,13 @@
 __pycache__/
 *.pyc
 *.zip
+*.rar
 ./state/
 .claude/worktrees/
 .pytest_cache/
+
+# PythonGO vendor SDK — commit Python source for reference,
+# exclude Windows binary (macOS/Linux can't load .pyd)
+pythongo/**/*.pyd
+pythongo/**/*.png
+pythongo/**/*.qss
