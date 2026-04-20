@@ -637,7 +637,7 @@ class CU_Short_Portfolio_EAL_TEST(BaseStrategy):
 
     def _save(self):
         state = {"trough_price": self.trough_price, "avg_price": self.avg_price, "signal_v26": self._signal_v26, "signal_v29": self._signal_v29, "trading_day": self._current_td, "today_trades": self._today_trades[-50:]}
-        state.update(self._risk.get_state())
+        state.update(self._risk.get_state() if self._risk is not None else {})
         save_state(state, name=STRATEGY_NAME)
 
     def _push_widget(self, kline, sp=0.0):

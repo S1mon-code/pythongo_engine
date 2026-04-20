@@ -1605,7 +1605,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             # 让 _on_bar 的 cancel sweep 清理遗留订单。
             "executor": self._entry.get_state() if self._entry is not None else {},
         }
-        state.update(self._risk.get_state())
+        # Null-guard: on_start 中途失败(如合约代码错)时 _risk 可能仍为 None,
+        # on_stop 调 _save 会 AttributeError (2026-04-20 实盘发现并修复)
+        if self._risk is not None:
+            state.update(self._risk.get_state() if self._risk is not None else {})
         save_state(state, name=STRATEGY_NAME)
 
     def _send_review(self):

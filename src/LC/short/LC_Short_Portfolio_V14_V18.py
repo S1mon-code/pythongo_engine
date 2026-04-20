@@ -1121,7 +1121,7 @@ class LC_Short_Portfolio_V14_V18(BaseStrategy):
             "trading_day": self._current_td,
             "today_trades": self._today_trades[-50:],
         }
-        state.update(self._risk.get_state())
+        state.update(self._risk.get_state() if self._risk is not None else {})
         save_state(state, name=STRATEGY_NAME)
 
     def _send_review(self):

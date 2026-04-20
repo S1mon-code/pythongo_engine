@@ -808,7 +808,7 @@ class TestFullModule(BaseStrategy):
             "trading_day": self._current_td,
             "today_trades": self._today_trades[-50:],
         }
-        state.update(self._risk.get_state())  # peak_equity, daily_start_eq
+        state.update(self._risk.get_state() if self._risk is not None else {})  # peak_equity, daily_start_eq
         save_state(state, name="TestFullModule")
 
     def _send_review(self):

@@ -782,5 +782,5 @@ class TestScaledEntry(BaseStrategy):
             "hold_long_opened": self._hold_long_opened,
         }
         if self._risk is not None:
-            state.update(self._risk.get_state())
+            state.update(self._risk.get_state() if self._risk is not None else {})
         save_state(state, name=STRATEGY_NAME)
