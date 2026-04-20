@@ -779,3 +779,122 @@ class TestPendingOidFormat:
         ex.register_pending(2, 1, price=99.0)
         assert ex.pending_vol == 3
         assert ex.remaining == 3  # target 6 - filled 0 - pending 3
+
+
+class TestStatePersistence:
+    """2026-04-20: crash recovery — get_state/load_state/force_lock roundtrip."""
+
+    def test_roundtrip_idle_state(self):
+        ex = ScaledEntryExecutor(_default_params())
+        state = ex.get_state()
+        ex2 = ScaledEntryExecutor(_default_params())
+        ex2.load_state(state)
+        assert ex2.state == EntryState.IDLE
+        assert ex2.target == 0
+        assert ex2.filled == 0
+
+    def test_roundtrip_bottom_with_pending(self):
+        """Mid-BOTTOM crash scenario: 有 pending 订单 + bar_start + direction."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0, bar_total_sec=3600)
+        ex.register_pending(oid=12345, vol=2, price=99.5)
+        ex.s.bottom_submitted = True
+
+        state = ex.get_state()
+
+        # JSON roundtrip
+        import json
+        state2 = json.loads(json.dumps(state))
+
+        ex2 = ScaledEntryExecutor(_default_params())
+        ex2.load_state(state2)
+        assert ex2.state == EntryState.BOTTOM
+        assert ex2.target == 6
+        assert ex2.s.direction == "buy"
+        assert ex2.s.bar_start == T0
+        assert ex2.s.bar_total_sec == 3600
+        assert ex2.s.bottom_submitted is True
+        # pending oid preserved with int key (list-of-dict design)
+        assert 12345 in ex2.pending_oids
+        assert ex2.pending_oids[12345].vol == 2
+        assert ex2.pending_oids[12345].price == 99.5
+
+    def test_roundtrip_preserves_oid_str_type(self):
+        """oid 原本是 str 也能 roundtrip."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.register_pending(oid="ABC-123", vol=1, price=100.0)
+
+        import json
+        state = json.loads(json.dumps(ex.get_state()))
+
+        ex2 = ScaledEntryExecutor(_default_params())
+        ex2.load_state(state)
+        assert "ABC-123" in ex2.pending_oids
+        assert ex2.pending_oids["ABC-123"].vol == 1
+
+    def test_roundtrip_filled_and_stage_transitions(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.s.state = EntryState.FORCE
+        ex.s.filled = 4
+        ex.s.force_slot_start = T0 + timedelta(seconds=1800)
+        ex.s.force_slot_crossed = True
+        ex.s.over_target_triggered = True
+
+        import json
+        state = json.loads(json.dumps(ex.get_state()))
+
+        ex2 = ScaledEntryExecutor(_default_params())
+        ex2.load_state(state)
+        assert ex2.state == EntryState.FORCE
+        assert ex2.filled == 4
+        assert ex2.s.force_slot_start == T0 + timedelta(seconds=1800)
+        assert ex2.s.force_slot_crossed is True
+        assert ex2.s.over_target_triggered is True
+
+    def test_force_lock_enters_locked(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        assert ex.state == EntryState.BOTTOM
+        ex.force_lock()
+        assert ex.state == EntryState.LOCKED
+
+    def test_force_lock_blocks_new_submits(self):
+        """force_lock 后 on_tick 不应发新单."""
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        ex.force_lock()
+        actions = ex.on_tick(**_base_tick_args(elapsed_sec=120))
+        assert actions == []
+
+    def test_load_empty_state_is_noop(self):
+        ex = ScaledEntryExecutor(_default_params())
+        ex.on_signal(target=6, direction="buy", now=T0,
+                     current_position=0, forecast=5.0)
+        original_target = ex.target
+        ex.load_state({})
+        ex.load_state(None)
+        # State unchanged
+        assert ex.target == original_target
+
+    def test_load_corrupted_datetime_degrades_gracefully(self):
+        ex = ScaledEntryExecutor(_default_params())
+        bad_state = {
+            "state": "bottom",
+            "target": 3,
+            "filled": 1,
+            "direction": "buy",
+            "bar_start": "not-an-iso-date",
+            "bar_total_sec": 3600,
+            "pending_orders": [],
+        }
+        ex.load_state(bad_state)
+        assert ex.s.bar_start is None  # parsed None, not crashed
+        assert ex.target == 3
+        assert ex.filled == 1

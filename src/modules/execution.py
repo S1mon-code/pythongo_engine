@@ -313,6 +313,94 @@ class ScaledEntryExecutor:
         self.s.pending_oids.pop(oid, None)
 
     # ================================================================== #
+    # 持久化 (crash recovery, 2026-04-20)
+    # ================================================================== #
+
+    def get_state(self) -> dict:
+        """Serialize 给 persistence. 支持 JSON roundtrip.
+
+        pending_orders 用 list-of-dict 而非 dict, 保留 oid 原类型
+        (JSON 的 dict key 只能是 str).
+        """
+        s = self.s
+
+        def _iso(dt):
+            return dt.isoformat() if dt else None
+
+        return {
+            "state": s.state.value,
+            "target": s.target,
+            "target_original": s.target_original,
+            "filled": s.filled,
+            "direction": s.direction,
+            "bar_start": _iso(s.bar_start),
+            "bar_total_sec": s.bar_total_sec,
+            "bottom_lots_actual": s.bottom_lots_actual,
+            "bottom_submitted": s.bottom_submitted,
+            "bottom_filled": s.bottom_filled,
+            "bottom_overdue_escalated": s.bottom_overdue_escalated,
+            "over_target_triggered": s.over_target_triggered,
+            "last_submit_ts": _iso(s.last_submit_ts),
+            "force_slot_start": _iso(s.force_slot_start),
+            "force_slot_crossed": s.force_slot_crossed,
+            "pending_orders": [
+                {"oid": oid, "vol": o.vol, "price": o.price}
+                for oid, o in s.pending_oids.items()
+            ],
+            "feishu_bottom_sent": s.feishu_bottom_sent,
+            "feishu_opp_first_sent": s.feishu_opp_first_sent,
+            "feishu_force_sent": s.feishu_force_sent,
+        }
+
+    def load_state(self, state: dict) -> None:
+        """Deserialize. 空 dict 或 None 安全 no-op."""
+        if not state:
+            return
+
+        def _parse(val):
+            if not val:
+                return None
+            try:
+                return datetime.fromisoformat(val)
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            self.s.state = EntryState(state.get("state", "idle"))
+        except ValueError:
+            self.s.state = EntryState.IDLE
+        self.s.target = state.get("target", 0)
+        self.s.target_original = state.get("target_original", 0)
+        self.s.filled = state.get("filled", 0)
+        self.s.direction = state.get("direction", "")
+        self.s.bar_start = _parse(state.get("bar_start"))
+        self.s.bar_total_sec = state.get("bar_total_sec", 3600)
+        self.s.bottom_lots_actual = state.get("bottom_lots_actual", 0)
+        self.s.bottom_submitted = state.get("bottom_submitted", False)
+        self.s.bottom_filled = state.get("bottom_filled", False)
+        self.s.bottom_overdue_escalated = state.get("bottom_overdue_escalated", False)
+        self.s.over_target_triggered = state.get("over_target_triggered", False)
+        self.s.last_submit_ts = _parse(state.get("last_submit_ts"))
+        self.s.force_slot_start = _parse(state.get("force_slot_start"))
+        self.s.force_slot_crossed = state.get("force_slot_crossed", False)
+        self.s.pending_oids = {
+            item["oid"]: _PendingOrder(vol=item["vol"], price=item.get("price", 0.0))
+            for item in state.get("pending_orders", [])
+            if "oid" in item and "vol" in item
+        }
+        self.s.feishu_bottom_sent = state.get("feishu_bottom_sent", False)
+        self.s.feishu_opp_first_sent = state.get("feishu_opp_first_sent", False)
+        self.s.feishu_force_sent = state.get("feishu_force_sent", False)
+
+    def force_lock(self) -> None:
+        """Crash recovery: 强制 LOCKED 阻断本 bar 继续发新单.
+
+        策略层在 on_start 检测到遗留 pending_orders 时应调用此方法,
+        并把 oid 加回 self.order_id 让 _on_bar cancel sweep 清理。
+        """
+        self.s.state = EntryState.LOCKED
+
+    # ================================================================== #
     # 查询
     # ================================================================== #
 
