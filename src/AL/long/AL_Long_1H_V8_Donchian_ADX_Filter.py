@@ -337,6 +337,13 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._entry: ScaledEntryExecutor | None = None
         self._rvwap_prev_vol = 0
 
+        # Startup eval (2026-04-20) — 启动后首 tick 就绪时评估信号,
+        # 避免等下一根 bar close 才开始入场。
+        self._needs_startup_eval = True
+        # Re-entry guard: 同一 bar 止损/平仓后记录 bar ts,
+        # 阻断 restart 时在同一 bar 重新入场 (whipsaw).
+        self._last_exit_bar_ts: int = 0
+
     @property
     def main_indicator_data(self):
         return {"forecast": self.state_map.forecast}
@@ -387,14 +394,46 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             self.state_map.signal = saved.get("signal", 0.0)
             self._current_td = saved.get("trading_day", "")
             self._today_trades = saved.get("today_trades", [])
-            self.output(f"[恢复] peak_eq={self._risk.peak_equity:.0f} avg={self.avg_price:.1f}")
+            self._last_exit_bar_ts = saved.get("last_exit_bar_ts", 0)
+
+            # Executor crash recovery (2026-04-20)
+            exec_state = saved.get("executor") or {}
+            if exec_state:
+                self._entry.load_state(exec_state)
+                pending_orders = exec_state.get("pending_orders", [])
+                if pending_orders:
+                    # 有遗留 pending → force LOCKED 阻断本 bar 继续发新单,
+                    # 把 oid 加回 self.order_id 让 _on_bar 的 cancel sweep 处理。
+                    self._entry.force_lock()
+                    for item in pending_orders:
+                        oid = item.get("oid")
+                        if oid is not None:
+                            self.order_id.add(oid)
+                    pending_total = sum(i.get("vol", 0) for i in pending_orders)
+                    self.output(
+                        f"[崩溃恢复] executor 遗留 {len(pending_orders)} 单 "
+                        f"({pending_total}手), 已 force_lock + 加回 cancel 队列"
+                    )
+                    feishu("warning", p.instrument_id,
+                           f"**崩溃恢复** executor 遗留 {len(pending_orders)}单 "
+                           f"({pending_total}手)\n"
+                           f"state={exec_state.get('state')} "
+                           f"filled={exec_state.get('filled')}/"
+                           f"{exec_state.get('target')}\n"
+                           f"已 LOCKED 本 bar, 下一根 bar cancel 清理")
+
+            self.output(
+                f"[恢复] peak_eq={self._risk.peak_equity:.0f} "
+                f"avg={self.avg_price:.1f} last_exit_bar={self._last_exit_bar_ts}"
+            )
 
         acct = self._get_account()
         if acct:
             if self._risk.peak_equity == p.capital:
                 self._risk.update(acct.balance)
             if self._risk.daily_start_eq == p.capital:
-                self._risk.on_day_change(acct.balance)
+                # 过夜持仓浮盈/浮亏不进 daily_start_eq (Tier 1 #3)
+                self._risk.on_day_change(acct.balance, acct.position_profit)
 
         pos = self.get_position(p.instrument_id)
         actual = pos.net_position if pos else 0
@@ -447,6 +486,21 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 self._rvwap.update(tick.last_price, tick.volume, datetime.now())
             except Exception as e:
                 self.output(f"[rvwap异常] {type(e).__name__}: {e}")
+
+        # 启动评估 — 首次 tick 就绪且交易时段内评估一次历史信号 (2026-04-20)
+        if (self._needs_startup_eval
+                and self.trading
+                and self._pricer is not None and self._pricer.last > 0
+                and self._guard is not None and self._guard.should_trade()):
+            try:
+                self._evaluate_startup()
+            except Exception as e:
+                self.output(f"[启动评估异常] {type(e).__name__}: {e}")
+                feishu("error", self.params_map.instrument_id,
+                       f"**启动评估异常** {type(e).__name__}: {e}")
+            finally:
+                # 无论成败只跑一次, 避免每 tick 重试
+                self._needs_startup_eval = False
 
         try:
             self._on_tick_stops(tick)
@@ -714,7 +768,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if td != self._current_td and self._current_td:
             acct = self._get_account()
             if acct:
-                self._risk.on_day_change(acct.balance)
+                # 21:00 切换:剔除过夜浮盈浮亏, 避免污染次日 daily_pnl 基线
+                self._risk.on_day_change(acct.balance, acct.position_profit)
             self._perf.on_day_change()
             self._today_trades = []
             self._current_td = td
@@ -745,6 +800,114 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 and DAILY_REVIEW_MINUTE <= now.minute < DAILY_REVIEW_MINUTE + 5):
             self._send_review()
             self._daily_review_sent = True
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Startup Eval (2026-04-20) — 首 tick 就绪时评估历史信号
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _current_bar_ts(self) -> int:
+        """当前 bar 起始时间戳 (epoch sec), 按 kline_style 对齐."""
+        sec = _freq_to_sec(self.params_map.kline_style)
+        return int(time.time() // sec * sec)
+
+    def _evaluate_startup(self) -> None:
+        """启动后 + 首 tick 就绪时的一次性信号评估.
+
+        避免等待下一根 bar close 才开始入场。行为:
+        1. 用实盘 tick 价覆盖 producer.close[-1] re-check 信号 (决策 B)
+           — 防止历史 close 已成立但实盘价回落的误判
+        2. re-entry guard: 若当前 bar 刚止损过, 跳过 (whipsaw 防御)
+        3. 通过 executor.on_signal 走 BOTTOM/OPP/FORCE 状态机 (决策 A)
+           — 不一口气满仓, 让 executor spread-aware pricing 吸收价格跳空
+        """
+        p = self.params_map
+        producer = self.kline_generator.producer
+        if len(producer.close) < WARMUP + 2:
+            self.output("[启动评估] 历史 bar 不足 WARMUP, 跳过")
+            return
+
+        closes = np.array(producer.close, dtype=np.float64)
+        highs = np.array(producer.high, dtype=np.float64)
+        lows = np.array(producer.low, dtype=np.float64)
+        bar_idx = len(closes) - 1
+
+        # 决策 B: 用实盘 tick 价覆盖 last close 做 live re-check
+        live_price = self._pricer.last if self._pricer is not None else 0.0
+        closes_live = closes.copy()
+        if live_price > 0:
+            closes_live[-1] = live_price
+        close = float(closes_live[-1])
+
+        raw = generate_signal(closes_live, highs, lows, bar_idx)
+        forecast = min(FORECAST_CAP, max(0.0, raw * FORECAST_SCALAR))
+        self.state_map.signal = round(raw, 3)
+        self.state_map.forecast = round(forecast, 1)
+
+        if forecast <= 0:
+            self.output(
+                f"[启动评估] forecast=0 (live={live_price:.1f}), 等下一根 bar"
+            )
+            return
+
+        # Re-entry guard: 同一 bar 止损过不重入
+        cur_bar_ts = self._current_bar_ts()
+        if self._last_exit_bar_ts >= cur_bar_ts:
+            self.output(
+                f"[启动评估] 当前 bar ts={cur_bar_ts} ≤ last_exit={self._last_exit_bar_ts}, "
+                f"forecast={forecast:.1f} 但被同 bar 重入场 guard 跳过"
+            )
+            feishu("warning", p.instrument_id,
+                   f"**启动评估跳过**\n同一 bar 重入场被拦截\n"
+                   f"forecast={forecast:.1f} live={live_price:.1f}\n"
+                   f"bar_ts={cur_bar_ts} last_exit={self._last_exit_bar_ts}")
+            return
+
+        atr_arr = _atr(highs, lows, closes)
+        optimal_raw = calc_optimal_lots(
+            forecast, atr_arr[bar_idx], close,
+            p.capital, p.max_lots, self._multiplier, ANNUAL_FACTOR,
+        )
+        optimal = round(optimal_raw)
+        pos = self.get_position(p.instrument_id)
+        net_pos = pos.net_position if pos else 0
+        target = apply_buffer(optimal, net_pos)
+        target = min(target, p.max_lots)
+
+        if target <= net_pos:
+            self.output(
+                f"[启动评估] target={target} ≤ net_pos={net_pos}, 无需入场"
+            )
+            return
+
+        # 保证金预检 (与 _on_bar / _execute 一致)
+        acct = self._get_account()
+        if acct and close * self._multiplier * target * 0.15 > acct.available * 0.6:
+            self.output(f"[启动评估] 保证金不足, 跳过 target={target}")
+            feishu("error", p.instrument_id,
+                   f"**启动评估保证金不足** 目标 {target}手")
+            return
+
+        bar_total = _freq_to_sec(p.kline_style)
+        actions = self._entry.on_signal(
+            target=target, direction="buy",
+            now=datetime.now(), current_position=net_pos,
+            forecast=forecast, bar_total_sec=bar_total,
+        )
+        for a in actions:
+            self._apply_entry_action(a)
+
+        self._pending_reason = (
+            f"[启动评估] live={live_price:.1f} signal={raw:.3f} "
+            f"forecast={forecast:.1f} optimal={optimal} target={target}"
+        )
+        self.output(
+            f"[启动评估] 触发 executor.on_signal target={target} "
+            f"net_pos={net_pos} live={live_price:.1f}"
+        )
+        feishu("info", p.instrument_id,
+               f"**启动评估入场** target={target}手 buy\n"
+               f"live={live_price:.1f} signal={raw:.3f} forecast={forecast:.1f}\n"
+               f"net_pos={net_pos} optimal={optimal}")
 
     # ══════════════════════════════════════════════════════════════════════
     #  Scaled Entry (2026-04-17) — 替代 VWAP 入场路径
@@ -879,7 +1042,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                 signal_price = self._execute(kline, action)
             elif action in ("OPEN", "ADD") and self._entry is not None:
                 # 2026-04-17: 残留 OPEN/ADD → 重新走 executor 入场
-                net_pos = self.get_position(self.params_map.instrument_id).net_position
+                _pos = self.get_position(self.params_map.instrument_id)
+                net_pos = _pos.net_position if _pos else 0
                 bar_total = _freq_to_sec(self.params_map.kline_style)
                 actions = self._entry.on_signal(
                     target=self._pending_target or 1, direction="buy",
@@ -948,7 +1112,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             p.capital, p.max_lots, self._multiplier, ANNUAL_FACTOR,
         )
         optimal = round(optimal_raw)
-        net_pos = self.get_position(p.instrument_id).net_position
+        _pos = self.get_position(p.instrument_id)
+        net_pos = _pos.net_position if _pos else 0
         target = apply_buffer(optimal, net_pos)
         target = min(target, p.max_lots)
         # forecast=0 → 强制退出 (信号消失不走buffer)
@@ -1152,7 +1317,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         if self._guard is not None and not self._guard.should_trade():
             self.output(f"[执行跳过] 非交易时段, 延后 {action}")
             return 0.0
-        actual = self.get_position(p.instrument_id).net_position
+        _pos = self.get_position(p.instrument_id)
+        actual = _pos.net_position if _pos else 0
 
         if action == "OPEN":
             target = self._pending_target or 1
@@ -1310,6 +1476,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._risk.trough_price = 0.0
         self._risk._last_trail_minute = None
         self._pending_target = None
+        # Re-entry guard 时间戳 (2026-04-20): 阻断 restart 时同 bar 重入场
+        self._last_exit_bar_ts = self._current_bar_ts()
         self._save()
 
     def _exec_close(self, kline: KLineData, actual: int, action: str) -> float:
@@ -1350,6 +1518,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                f"持仓: {actual} -> 0手")
         self.avg_price = 0.0
         self.peak_price = 0.0
+        # Re-entry guard (2026-04-20)
+        self._last_exit_bar_ts = self._current_bar_ts()
         self._save()
         return -price
 
@@ -1371,6 +1541,11 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
             "signal": self.state_map.signal,
             "trading_day": self._current_td,
             "today_trades": self._today_trades[-50:],
+            "last_exit_bar_ts": self._last_exit_bar_ts,
+            # Executor state — crash recovery (2026-04-20).
+            # Restart 时 load + force_lock + 把 pending oids 加回 self.order_id
+            # 让 _on_bar 的 cancel sweep 清理遗留订单。
+            "executor": self._entry.get_state() if self._entry is not None else {},
         }
         state.update(self._risk.get_state())
         save_state(state, name=STRATEGY_NAME)
