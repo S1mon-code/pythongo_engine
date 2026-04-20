@@ -11,7 +11,9 @@
 | [base.md](./base.md) | `pythongo.base` — BaseStrategy / BaseParams / BaseState / 回调 / 报单撤单 API + INFINIGO 低层附录 |
 | [classdef.md](./classdef.md) | `pythongo.classdef` — 所有数据类 (Account / Position / Tick / Trade / Order / KLine / Instrument / Investor) |
 | [utils.md](./utils.md) | `pythongo.utils` + `pythongo.core` — KLineGenerator / Scheduler / Indicators / MarketCenter |
-| [ui.md](./ui.md) | `pythongo.ui` — 带 UI 的 BaseStrategy + KLWidget |
+| [ui.md](./ui.md) | `pythongo.ui` — 带 UI 的 BaseStrategy + KLWidget + drawer + crosshair |
+| [options.md](./options.md) | `pythongo.option` — Option 定价(BSM/BAW/CRR)+ 希腊值 + OptionChain 期权链 |
+| [backtesting.md](./backtesting.md) | `pythongo.backtesting` — 回测引擎(**不建议用,用 QBase**)|
 | [types.md](./types.md) | 所有 Type 别名 + 数值映射 (Direction / Offset / Hedge / OrderFlag / OrderStatus / ProductClass) |
 
 ## 导入约定
@@ -301,7 +303,36 @@ class Position(object):
 
 两个不同的 convention,注意别混。
 
-## 12. `auto_close_position` SHFE/INE **一次调用可能发两单**
+## 12. 期权定价 + 期权链(为将要上的期权策略)
+
+**Option 类**(`option.py` L25-555):
+- **3 种定价模型**:BSM 欧式 / BAW 美式近似 / CRR 二叉树美式
+- **完整希腊值**:delta / gamma / vega / theta / rho(3 套实现,仅 BSM 额外有 vanna + rho_q)
+- **`bs_iv()` 二分法算 IV**,fallback `sigma_default=0.8`
+- **`@calculate_once` 装饰器**:CRR / BAW 希腊值首次调用才跑基础模拟,后续缓存
+- ⚠️ **`market_price` 构造时被贴现一次** (`/ self.disc`)——外部别再贴现
+- ⚠️ **CRR n=1000 节点**,第一次算慢(几十~几百 ms),之后快
+
+**OptionChain 类**(`option.py` L568-793):
+- 初始化调 `infini.get_instruments_by_product`(**速率限制敏感**,`on_start` 建一次)
+- 数据结构:`{underlying: {expire_date: {strike_prices, call_options, put_options}}}`
+- `get_atm_option` **返回行权价列表索引,不是合约代码**
+- ETF 期权多到期日,期货期权每月一到期
+- `get_call_options / get_put_options` 返回**合约代码 str 列表**(不是 InstrumentData)
+
+详见 [options.md](./options.md)。
+
+## 13. pythongo 内置回测引擎**不建议用**
+
+- `margin_rate=0.13` 对期权错(权利金 vs 保证金逻辑不同)
+- **不支持撤单**(`fake_class.INFINIGO.cancelOrder` 只 `return None`)
+- **严格对手盘撮合**(`price >= ask1` 才成交),比实盘保守
+- **macOS 不跑**(`cache_dir` 依赖 `APPDATA` 环境变量)
+- `initial_capital` 默认 `100_10000` 看起来像 typo(1,001,000 而不是 10,000,000)
+
+真正的回测用 QBase。详见 [backtesting.md](./backtesting.md)。
+
+## 14. `auto_close_position` SHFE/INE **一次调用可能发两单**
 
 **源码**:`pythongo/base.py` L492-601
 

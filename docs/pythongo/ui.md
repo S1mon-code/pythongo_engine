@@ -269,3 +269,196 @@ Portfolio 策略同时跑 H1 + H4 两个 `KLineGenerator`。**只在 H4 的 `rea
 
 CLAUDE.md 记录:
 > 双时间框架: `kline_generator_h1` + `kline_generator_h4`,只有 H4 推图表
+
+---
+
+# drawer.py — K 线图主绘制模块
+
+**源码**:`pythongo/ui/drawer.py`(697 行)
+
+## `KLineWidget` — 主 widget
+
+3 个子图垂直堆叠:
+- **主图**(`kline_plot_item`)— K 线 + 主图指标 + 买卖箭头,最小高度 350
+- **成交量子图**(`vol_plot_item`)— 成交量柱图,最大高度 150
+- **底部子图**(`bottom_chart`)— 默认持仓量,或副图指标
+
+### 关键常量
+
+```python
+kline_count = 60  # 默认显示 60 根 K 线窗口
+
+# 涨红跌绿(中国习惯,和西方相反)
+up_color   = (255, 113, 113)  # 红色,上涨
+down_color = (  0, 176,  26)  # 绿色,下跌
+
+# 指标颜色循环 deque(6 种)
+colors = ["#FFFFFF", "#FFF100", "#FF37E5", "#C18AFF", "#B6FF1A", "#368FFF"]
+```
+
+**超过 6 个指标颜色会循环**——不会冲突但视觉不易区分。
+
+### 信号(pyqtSignal)
+
+| 信号 | 参数 | 连接到 |
+|------|------|--------|
+| `update_candle_signal` | — | `update_candle` |
+| `add_buy_sell_signal` | `int`(array index) | `add_new_bs_signal` |
+| `draw_marks_signal` | — | `draw_marks` |
+
+### `update_kline(kline) -> bool`
+
+```python
+# drawer.py L579-582
+is_new_kline = not (
+    len(self.datas) > 0
+    and kline.datetime == self.datas[-1].datetime.astype(datetime.datetime)
+)
+```
+
+**通过 datetime 相同与否判断**:
+- `callback` bar close 时 datetime 不同 → 追加新 K
+- `real_time_callback` 每 tick 时 datetime 相同 → 更新最后一根
+
+返回 `is_new_kline` 供上层决定 `klines.append` vs `klines[-1] = `。
+
+### 买卖信号箭头:signal_price 正上负下
+
+```python
+# drawer.py L530-534 add_new_bs_signal
+arrow = pg.ArrowItem(
+    pos=(index, self.datas[index]["low" if price > 0 else "high"]),
+    angle=90 if price > 0 else -90,                          # ⭐ 正向上,负向下
+    brush=(168, 101, 243) if price > 0 else (255, 234, 90),  # 买紫,卖黄
+)
+```
+
+| `signal_price` | 箭头方向 | 锚点 | 颜色 |
+|----------------|---------|-----|------|
+| `> 0` | ↑(买) | K 线 `low` 下 | 紫色 `(168, 101, 243)` |
+| `< 0` | ↓(卖) | K 线 `high` 上 | 黄色 `(255, 234, 90)` |
+
+**我们策略 `_execute` 的 return**:
+- 开仓/加仓 → `return price`(正,向上箭头)
+- 平仓/止损 → `return -price`(负,向下箭头)
+- REDUCE → `return -price`(减仓也是卖)
+
+### `CandlestickItem` — K 线图形对象
+
+- 用 `QPicture` 缓存提升性能(只重画可视区)
+- **下跌绿实心,上涨红空心**(中国习惯)
+
+### `load_data(datas: pd.DataFrame)` — 载入历史 K 线
+
+依赖 pandas DataFrame,datetime 为 index。**成交量染色同步 K 线涨跌**:
+
+```python
+# L647-648
+df.loc[datas["open"].values <= datas["close"].values, "open"] = 0   # 上涨
+df.loc[datas["open"].values > datas["close"].values, "close"] = 0   # 下跌
+```
+
+### `init_xrange_event()` — Y 轴自动自适应
+
+```python
+def viewXRangeChanged(low, high, *args):
+    view_range = view.viewRange()
+    xmin, xmax = ...
+    ymin = min(self.datas[xmin:xmax][low])
+    ymax = max(self.datas[xmin:xmax][high])
+    view.setYRange(ymin, ymax)
+```
+
+**可视 X 范围变化时,Y 轴自动根据可见区 low/high 缩放**——所以拖图时 Y 轴会跟着变。
+
+### `clear_data()`
+
+策略重启时通过 `KLWidget.recv_kline` 的 `_first_add` 路径调用。
+
+---
+
+# crosshair.py — 十字光标
+
+**源码**:`pythongo/ui/crosshair.py`(252 行)
+
+## `Crosshair(QtCore.QObject)`
+
+挂载到 3 个子图(主 / 成交量 / 底部),鼠标移动时:
+- 竖线穿 3 个子图同步
+- 水平线只在当前子图显示
+- 右上角 HTML text:所有指标当前值
+- 左上角 HTML text:O/H/L/C + 成交量 + 持仓量 + 信号价
+
+### 颜色规则
+
+```python
+up_color   = "#FF7171"  # 涨红
+down_color = "#00B01A"  # 跌绿
+
+def get_color(self, value: float, close: float) -> str:
+    return self.up_color if value > close else self.down_color
+```
+
+**O/H/L/C 每个字段独立染色**——根据 **当根 vs 上根 close** 的大小关系。
+
+### `__text_info` 左上(主图)
+
+```
+日期
+2026-04-20
+时间
+10:30:00
+开盘价       ← 按和上根 close 比较染色
+3,500.5
+最高价
+3,510.0
+最低价
+3,495.0
+收盘价
+3,505.0
+成交量
+12,345
+持仓量
+567,890
+成交价       ← 如果这根 K 有信号
+85.0
+```
+
+### `__text_sig` 右上 HTML
+
+所有主图指标当前值,按 `indicator_color_map` 染色。字体 18px。
+
+### `__text_sub_sig` 副图右上
+
+副图指标(同主图格式)。
+
+### `__text_volume` 成交量子图右上
+
+```
+VOL: 12345
+```
+
+### 鼠标事件节流
+
+```python
+self.proxy = pg.SignalProxy(
+    signal=parent.scene().sigMouseMoved,
+    rateLimit=60,          # 每秒最多 60 次更新
+    slot=self.__mouse_moved
+)
+```
+
+**60 Hz 节流**,避免高频移动时卡顿。
+
+---
+
+## 模块整体结构
+
+| 文件 | 作用 |
+|------|------|
+| `ui/__init__.py` | 从 `widget` 导出 `BaseStrategy` + `KLWidget` |
+| `ui/widget.py` | UI `BaseStrategy` + `KLWidget`(连接策略和 drawer)+ `QtGuiSupport` |
+| `ui/drawer.py` | `KLineWidget` — K 线绘图主模块(PyQt + pyqtgraph) |
+| `ui/crosshair.py` | `Crosshair` — 十字光标(依赖 KLineWidget) |
+| `ui/style.qss` | Qt 样式表(窗口外观) |
+| `ui/infinitrader.png` | 窗口图标 |
