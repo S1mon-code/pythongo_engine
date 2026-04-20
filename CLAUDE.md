@@ -11,6 +11,7 @@
 - **指标**: 纯numpy手写，从QBase原样移植（避免信号偏差）
 - **通知**: 飞书Webhook（非阻塞推送）
 - **格式化**: ruff
+- **PythonGO 版本**: 2025.0925.1420
 
 ## 项目结构
 
@@ -20,9 +21,12 @@ src/
 │   ├── eal.py            # EAL执行算法层 — 大单拆批，M3子bar多因子评分执行
 │   ├── twap.py           # TWAP分批执行器 — bar开始后2-11分钟分批下单
 │   ├── risk.py           # 止损体系 — tick级硬止损 + M1级移动止损 (2026-04-17 重构)
+│   │                       + on_day_change 剔除过夜浮盈 (2026-04-20)
 │   ├── pricing.py        # ★ Spread-aware 限价定价 + urgency score (Phase 3)
 │   ├── rolling_vwap.py   # ★ 滚动 30min VWAP — Scaled entry 的"便宜"锚点 (Phase 4)
 │   ├── execution.py      # ★ ScaledEntryExecutor 状态机 — 分仓进场 (Phase 4)
+│   │                       + get_state/load_state/force_lock 崩溃恢复 (2026-04-20)
+│   ├── error_handler.py  # ★ throttle_on_error — 0004 撤单错误自动流控 (2026-04-20)
 │   ├── session_guard.py  # 交易时段守卫
 │   ├── contract_info.py  # 合约信息 — 乘数、最小变动价
 │   ├── feishu.py         # 飞书通知
@@ -34,27 +38,41 @@ src/
 │   ├── performance.py    # 绩效追踪
 │   ├── rollover.py       # 换月提醒
 │   └── position_sizing.py # 仓位计算 — Vol Targeting + Carver buffer
-├── AL/long/              # 电解铝做多策略 (V8 已集成 ScaledEntryExecutor)
+├── AL/long/              # 电解铝做多策略 (V8 已集成完整修复 + startup eval + crash recovery)
 ├── CU/short/             # 铜做空策略
 ├── I/long/  I/short/     # 铁矿石做多+做空策略
 ├── IH/long/              # 上证50做多策略
-├── LC/short/             # 生猪做空策略
+├── LC/short/             # 碳酸锂做空策略
 ├── DailyReporter.py      # 全账户每日汇总飞书推送
 └── test/                 # 集成测试策略
     ├── TestFullModule.py     # 全模块协同测试（MA双均线, 已集成 executor）
     ├── TestScaledEntry.py    # ★ ScaledEntryExecutor 三模式验证 (v2)
+    ├── TestAllFixes.py       # ★ 2026-04-20 全部 8 项修复的 smoke test (高频信号)
     └── *_TEST.py             # 各品种/模块独立测试
-tests/                    # pytest 单元测试 (2026-04-17)
-├── test_risk.py          # 23 用例: tick/M1 止损, 持久化
+tests/                    # pytest 单元测试
+├── test_risk.py          # 27 用例: tick/M1 止损 + on_day_change 过夜浮盈
 ├── test_pricing.py       # 31 用例: urgency + spread adaptation
 ├── test_rolling_vwap.py  # 12 用例: 滚动窗口 + delta_vol
 ├── test_order_monitor.py # 18 用例: escalation schedule
-└── test_execution.py     # 50 用例: 状态机 + 边界 + 记账
+├── test_execution.py     # 67 用例: 状态机 + 边界 + 记账 + crash recovery
+└── test_error_handler.py # 8 用例: 0004 流控 + 恢复 + 并发
 docs/
 ├── ARCHITECTURE.md       # 架构与开发规范
 ├── MODULE_REFERENCE.md   # 模块参考手册
 ├── OPERATIONAL_ISSUES_RESEARCH.md
-└── RESEARCH_REPORT.md
+├── RESEARCH_REPORT.md
+├── SESSION_2026_04_17.md # 2026-04-17 session 记录
+├── SESSION_2026_04_20.md # ★ 2026-04-20 fleet-wide 修复记录
+└── pythongo/             # ★ PythonGO V2 API 完整源码审计 (8 md, 3135 行)
+    ├── README.md         # 索引 + findings + bug list (已全部标 FIXED)
+    ├── base.md           # BaseStrategy + INFINIGO 附录
+    ├── classdef.md       # 10 个数据类字段表
+    ├── utils.md          # KLineGenerator / Scheduler / Indicators / MarketCenter
+    ├── ui.md             # widget + drawer + crosshair
+    ├── options.md        # Option 定价 + 希腊值 + OptionChain
+    ├── backtesting.md    # 回测引擎 (不建议用, 用 QBase)
+    └── types.md          # 所有 Type 别名 + 数值映射
+pythongo/                 # ★ PythonGO V2 源码 (供对照, .pyd 已 gitignore)
 ```
 
 ## 部署
@@ -68,9 +86,11 @@ pyStrategy/
   self_strategy/
     I_Short_Portfolio_V26_V29.py  ← 策略文件
     DailyReporter.py              ← 监控文件
+    TestAllFixes.py               ← smoke test (推荐先跑)
 ```
 
 **关键**: modules/ 放在 `pyStrategy/modules/`（与pythongo/同级），不是 self_strategy/ 下。
+**上线前必做**: 清空 `pyStrategy/state/` 目录 (避免旧 crash recovery 状态污染)。
 
 ## 策略命名规范
 
@@ -90,8 +110,9 @@ pyStrategy/
 - **Same-bar执行 (2026-04-14)**: 信号在当前bar产生后立即提交TWAP/executor，不等下一根bar
 - **非交易时段门控 (2026-04-17)**: 所有挂单/撤单必须在交易时段内。`_on_bar` 入口、`_on_tick_*`、`_submit_vwap/twap`、`_execute` 全部基于 `self._guard.should_trade()` 做门控。pre-opening(如SHFE 08:55-09:00集合竞价)发单/撤单会被拒绝(`errCode 0004`)。**`_on_bar`顶部的cancel_order块必须在session gate之后执行**
 - **每bar开头撤挂单**: `for oid in list(self.order_id): self.cancel_order(oid)` — 位于session gate之后;新架构下必须同步 `self._entry.register_cancelled(oid)` (2026-04-17 audit v2)
-- **21:00 Day Start**: 所有模块统一以21:00作为交易日切换点(夜盘开始)
+- **21:00 Day Start**: 所有模块统一以21:00作为交易日切换点(夜盘开始)。`RiskManager.on_day_change(balance, position_profit)` 剔除过夜浮盈 (2026-04-20 修复)
 - **双时间框架**: Portfolio策略同时运行两个KLineGenerator(如H1+H4)
+- **限价单强制**: 所有 `send_order` / `auto_close_position` **不传 `market=True`** (2026-04-20)，依赖 `_aggressive_price(price, direction, urgency)` 穿盘口定价
 
 ### 止损架构 (2026-04-17 重构)
 
@@ -100,6 +121,7 @@ pyStrategy/
 - 硬止损每 tick 判断, 破即触发, 无确认延时
 - 移动止损 peak/trough tick 级追踪 + 分钟门控判断 (降噪)
 - 触发时策略调 `_exec_stop_at_tick()` + `self._entry.on_stop_triggered()` 双路径
+- 平仓/止损时写入 `_last_exit_bar_ts` 用于 re-entry guard (2026-04-20)
 
 优先级: 止损 > 止盈 > 出场信号 > 加仓 > 建仓
 
@@ -128,19 +150,27 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 
 **Peg-to-bid1**: 每个 pending 订单记录 submit_price, bid1 漂移 >= threshold 自动 cancel+重挂
 
-详见 `src/modules/execution.py` 和 `tests/test_execution.py`。
+**Crash Recovery (2026-04-20)**: `get_state()` / `load_state()` / `force_lock()`。进程崩溃重启后,若检测到 pending_orders 非空 → force_lock + oid 加回 self.order_id + 飞书 warning,下一 bar cancel sweep 清理遗留。
 
-### PythonGO API 踩坑
+详见 `src/modules/execution.py` 和 `tests/test_execution.py` (67 用例)。
+
+### PythonGO API 踩坑 (已源码审计对齐 2025.0925.1420)
 
 - `get_account_fund_data("")` 会崩溃，必须先 `get_investor_data(1)` 拿investor_id
 - `self.output()` 替代 `print()`
-- `market=True` 用市价单，price参数仅用于显示
+- **禁止** `market=True` 市价单 — SHFE 等市场拒单(2026-04-20 全队移除 25 处)
 - KLineProducer没有open_interest，需在callback中从KLineData手动收集
 - 只提供tick数据，K线全靠KLineGenerator从tick合成
+- **`trade.direction` 是 `TypeOrderDirection = Literal["0", "1"]`** (源码确认,不是中文)。识别必须用健壮模式 `("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")`
+- **`order.volume` 不存在** — OrderData 只有 `total_volume / traded_volume / cancel_volume`。撤单回调用 `order.cancel_volume` (2026-04-20 全队修复 26 处)
+- `get_position(instrument_id)` **永远不返 None**,返回空 `Position()` 对象(`net_position = 0`)
+- `make_order_req` 在 `self.trading=False` 时静默 return None
+- `on_order` 根据**中文 status** 分发 `on_order_cancel / on_order_trade` — override 时必须调 `super().on_order(order)`
+- `on_error` 默认实现自带 0004 流控,override 必须调 `throttle_on_error(self, error)` 保留流控功能
 
-### 模块导入模板 (2026-04-17 更新)
+### 模块导入模板 (2026-04-20 更新)
 
-每个策略文件的模块导入保持一致(与 TestFullModule / TestScaledEntry 对齐):
+每个策略文件的模块导入保持一致(与 TestFullModule / TestScaledEntry / TestAllFixes 对齐):
 
 ```python
 from modules.contract_info import get_multiplier, get_tick_size
@@ -155,60 +185,87 @@ from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
-# 新增 (Phase 3 / Phase 4):
+# Phase 3 / Phase 4:
 from modules.pricing import AggressivePricer
 from modules.rolling_vwap import RollingVWAP
 from modules.execution import EntryParams, EntryState, ExecAction, ScaledEntryExecutor
+# 2026-04-20:
+from modules.error_handler import throttle_on_error
 ```
 
-### Scaled Entry 集成 checklist (21 项)
+### Scaled Entry 集成 checklist (24 项, 2026-04-20 更新)
 
 新策略若要接入 ScaledEntryExecutor, 必须实现:
 
 1. `__init__`: `self._rvwap: RollingVWAP | None = None`
 2. `__init__`: `self._entry: ScaledEntryExecutor | None = None`
 3. `__init__`: `self._unknown_oid_count = 0`
-4. `on_start`: 创建 `RollingVWAP(window_seconds=1800)` + `ScaledEntryExecutor(EntryParams(...))`
-5. `on_tick`: 喂 pricer + rvwap + 驱动 `_drive_entry`
-6. `_drive_entry`: 调 `executor.on_tick()` + apply actions + 更新 `entry_progress`
-7. `_apply_entry_action`: 处理 submit / cancel / cancel_all / feishu 四种 op
-8. `_apply_entry_action` submit 分支: `register_pending(oid, vol, price=a.price)` 带价位
-9. `_on_bar` OPEN/ADD 路径: 调 `executor.on_signal()` 并消费返回 actions
-10. `_on_bar` OPEN/ADD 路径: 加保证金预检 (audit v2)
-11. `_on_bar` 开头 cancel_order 后同步 `self._entry.register_cancelled(oid)`
-12. `_on_tick_stops` 触发后调 `executor.on_stop_triggered()` 并消费 actions
-13. `_exec_stop_at_tick` 等止损路径: cancel_order 同步 `register_cancelled`
-14. `on_trade`: `claimed_by_entry = self._entry.on_trade(...)` 判 claim
-15. `on_trade`: 未 claim 也不属 VWAP 的 oid 计入 `_unknown_oid_count` + warning
-16. VWAP 发单时 `self._vwap_oids.add(oid)` (若保留 legacy VWAP)
-17. `on_trade`: VWAP 成交累加条件: `oid in self._vwap_oids`
-18. `_vwap_cancel` / `_vwap_complete`: 清 `_vwap_oids`
-19. `_freq_to_sec`: 防御性处理 str / enum / "Enum.H1" 形式
-20. state_map 暴露 `entry_progress` 给 UI
-21. `_save`: 序列化 `peak_price` / `trough_price` + `self._risk.get_state()`
+4. `__init__`: `self._needs_startup_eval = True` 和 `self._last_exit_bar_ts: int = 0` (2026-04-20)
+5. `on_start`: 创建 `RollingVWAP(window_seconds=1800)` + `ScaledEntryExecutor(EntryParams(...))`
+6. `on_start` load_state: 恢复 `_last_exit_bar_ts` + executor state + crash recovery (force_lock + oid 回填)
+7. `on_start`: 调 `self._risk.on_day_change(acct.balance, acct.position_profit)` 传 position_profit (2026-04-20)
+8. `on_tick`: 喂 pricer + rvwap + 驱动 `_drive_entry`
+9. `on_tick`: 挂钩 `_evaluate_startup()` (首 tick 就绪时一次性触发) (2026-04-20)
+10. `_drive_entry`: 调 `executor.on_tick()` + apply actions + 更新 `entry_progress`
+11. `_apply_entry_action`: 处理 submit / cancel / cancel_all / feishu 四种 op
+12. `_apply_entry_action` submit 分支: `register_pending(oid, vol, price=a.price)` 带价位
+13. `_on_bar` OPEN/ADD 路径: 调 `executor.on_signal()` 并消费返回 actions
+14. `_on_bar` OPEN/ADD 路径: 加保证金预检 (audit v2)
+15. `_on_bar` 开头 cancel_order 后同步 `self._entry.register_cancelled(oid)`
+16. `_on_tick_stops` 触发后调 `executor.on_stop_triggered()` 并消费 actions
+17. `_exec_stop_at_tick` 等止损路径: cancel_order 同步 `register_cancelled`,并写入 `_last_exit_bar_ts`
+18. `on_trade`: `claimed_by_entry = self._entry.on_trade(...)` 判 claim
+19. `on_trade`: DIAG 打印 `[BUG_B_DIAG] direction={trade.direction!r}` + 健壮识别 (2026-04-20)
+20. `on_trade`: 未 claim 也不属 VWAP 的 oid 计入 `_unknown_oid_count` + warning
+21. `on_order_cancel`: 用 `order.cancel_volume` (不是 `.volume`) (2026-04-20)
+22. **`on_error`: 调 `throttle_on_error(self, error)` 启用 0004 流控** (2026-04-20)
+23. `_freq_to_sec`: 防御性处理 str / enum / "Enum.H1" 形式
+24. state_map 暴露 `entry_progress` 给 UI
+25. `_save`: 序列化 `executor state` + `last_exit_bar_ts` + `peak_price` + `self._risk.get_state()`
 
 参考实现: `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` (完整) 或
-`src/test/TestScaledEntry.py` (简化测试版)。
+`src/test/TestScaledEntry.py` (executor 三模式) 或
+`src/test/TestAllFixes.py` (所有 2026-04-20 修复的 smoke test)。
 
 ## 关键文件
 
 | 文件 | 用途 |
 |------|------|
-| `docs/ARCHITECTURE.md` | 最重要的参考文档 — 模板规范、API踩坑 |
+| `docs/ARCHITECTURE.md` | 模板规范、API踩坑 |
 | `docs/MODULE_REFERENCE.md` | 模块API参考 + 部署说明 |
-| `src/modules/risk.py` | 止损体系 — tick/M1 两层 (2026-04-17 重构) |
+| `docs/SESSION_2026_04_20.md` | ★ 本轮 session 完整记录 |
+| `docs/pythongo/` | ★ PythonGO V2 源码审计 (8 md, 3135 行) |
+| `src/modules/risk.py` | 止损 tick/M1 + on_day_change 过夜浮盈修正 |
 | `src/modules/pricing.py` | ★ Spread-aware 限价定价 + urgency (Phase 3) |
 | `src/modules/rolling_vwap.py` | ★ 滚动 30min VWAP (Phase 4) |
-| `src/modules/execution.py` | ★ ScaledEntryExecutor 入场状态机 (Phase 4) |
+| `src/modules/execution.py` | ★ ScaledEntryExecutor 入场状态机 + crash recovery |
+| `src/modules/error_handler.py` | ★ throttle_on_error 0004 流控 (2026-04-20) |
 | `src/modules/eal.py` | EAL执行算法层 (legacy) |
 | `src/modules/twap.py` | TWAP分批执行 (legacy) |
-| `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` | ★ 主实盘策略, 已集成完整 scaled entry |
+| `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` | ★ 主实盘策略, 完整集成所有修复 |
 | `src/test/TestFullModule.py` | 全模块集成测试模板 |
-| `src/test/TestScaledEntry.py` | ★ ScaledEntryExecutor 三模式验证 (hold_long/reversal/stop_test) |
+| `src/test/TestScaledEntry.py` | ★ ScaledEntryExecutor 三模式验证 |
+| `src/test/TestAllFixes.py` | ★ 2026-04-20 修复 smoke test (高频信号) |
 | `src/DailyReporter.py` | 全账户监控 |
-| `tests/test_*.py` | ★ 134 个 pytest 单元测试 |
+| `tests/test_*.py` | ★ 154 个 pytest 单元测试 (6 文件) |
 
-## 迭代历史 (2026-04-17)
+## 迭代历史
+
+### 2026-04-20 — Fleet-wide 修复 + 文档完整化
+
+- **PythonGO V2 源码审计**: 读完 28 个源文件 (除 core.pyd 二进制), 生成 `docs/pythongo/` 8 md 共 3135 行完整对照文档
+- **发现并修复 2 个 fleet-wide bug**:
+  - **Bug A**: `order.volume` 不存在 (OrderData 只有 cancel_volume/total_volume/traded_volume) — 26 处修复 in 24 文件
+  - **Bug B**: `trade.direction` 是 `"0"/"1"` 不是中文 — 37 处健壮识别 in 30 文件 + AL V8 DIAG
+- **市价单 → 限价单**: `market=True` 全部改 `market=False` — 25 处 in 9 文件
+- **0004 流控**: 新增 `modules/error_handler.py` + 32 策略文件接入 `throttle_on_error`
+- **AL V8 crash recovery**: executor `get_state/load_state/force_lock` + on_start 遗留订单处理
+- **AL V8 startup eval**: 首 tick 就绪时评估历史信号,避免等下一 bar (方案 C + 实盘价 re-check + re-entry guard)
+- **AL V8 overnight fix**: `RiskManager.on_day_change(balance, position_profit)` 剔除过夜浮盈
+- **新增 TestAllFixes.py**: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
+- **pytest**: 146 → 154 passing (+8 error_handler tests)
+
+### 2026-04-17 — 止损重构 + Scaled Entry
 
 - **2026-04-17 晨**: AL V8 10:00 发现 H1 bar 级止损延迟 68 点 → tick 级止损重构 (risk.py v2)
 - **2026-04-17 下午**: 全策略审计 v1-v3, 修 8 HIGH + 7 MEDIUM (commits 90def0d / 30ef673 / 57ec7d7)
@@ -218,4 +275,4 @@ from modules.execution import EntryParams, EntryState, ExecAction, ScaledEntryEx
 - **2026-04-17 Audit v3**: 对向信号透明化, VWAP/entry oid 隔离, unknown oid 观察
 - **2026-04-17 TestScaledEntry v2**: 三模式验证 (hold_long / reversal / stop_test)
 
-所有测试 134/134 绿, 实盘就绪。
+所有测试 154/154 绿, 实盘就绪。

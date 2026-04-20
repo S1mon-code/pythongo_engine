@@ -1,6 +1,9 @@
 # PythonGO Engine — 模块参考手册
 
-所有模块已在无限易模拟盘测试通过 (2026-04-02)。
+> **2026-04-20 更新**: 新增 `modules/error_handler.py`(0004 流控),更新至 PythonGO 2025.0925.1420 源码对齐。
+> 详见 `docs/SESSION_2026_04_20.md` + `docs/pythongo/` 8 md 完整 API 对照。
+
+所有模块已在无限易模拟盘测试通过 (2026-04-02,2026-04-20 全队修复后 pytest 154/154 绿)。
 
 ## 部署位置
 
@@ -28,6 +31,12 @@ from modules.order_monitor import OrderMonitor
 from modules.performance import PerformanceTracker
 from modules.rollover import check_rollover
 from modules.position_sizing import calc_optimal_lots, apply_buffer
+# 2026-04-17 Phase 3/4:
+from modules.pricing import AggressivePricer
+from modules.rolling_vwap import RollingVWAP
+from modules.execution import EntryParams, ExecAction, ScaledEntryExecutor
+# 2026-04-20:
+from modules.error_handler import throttle_on_error
 ```
 ```
 

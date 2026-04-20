@@ -52,9 +52,18 @@ from pythongo.utils import KLineGenerator, Scheduler
 
 ---
 
-# 🔴 已确认 Bug(源码证据)
+# ✅ 已修复 Bug(2026-04-20,commits `0a116b5` + `f3cd0d4`)
 
-## Bug A:`on_order_cancel` 访问不存在的 `.volume` 字段
+**修复状态总览**(见 `docs/SESSION_2026_04_20.md`):
+- **Bug A**:30 文件 26 处 `order.volume` → `order.cancel_volume` ✓
+- **Bug B**:30 文件 36 处 `"买" in str(trade.direction)` → 健壮模式(cover `"0"` / `"1"` / `"buy"` / `"sell"` / `"买"` / `"卖"`) ✓
+- **market=True**:9 文件 25 处全改 `market=False` ✓
+- **on_error 流控**:新增 `modules/error_handler.py` + 32 文件接入 `throttle_on_error` ✓
+- **验证**:`src/test/TestAllFixes.py` 8 项 smoke test + pytest 154/154 绿 ✓
+
+---
+
+## Bug A:`on_order_cancel` 访问不存在的 `.volume` 字段 — **已修复 ✓**
 
 **源码证据**:`pythongo/classdef/order.py`
 
@@ -82,7 +91,7 @@ def on_order_cancel(self, order: OrderData):
 
 **修法**:`order.volume` → `order.cancel_volume`(legacy);或迁移到 `on_cancel(CancelOrderData)` 新回调。
 
-## Bug B:`trade.direction` 识别错误(30 个文件)
+## Bug B:`trade.direction` 识别错误(30 个文件) — **已修复 ✓**
 
 **源码证据**:`pythongo/classdef/trade.py` L82-84
 
@@ -110,13 +119,13 @@ direction = "buy" if "买" in str(trade.direction) else "sell"
 - `SlippageTracker.on_fill(..., direction="sell")` 方向参数恒定错
 - `on_trade` 里 `if direction == "buy" and actual > 0: avg_price 更新` 分支**从不运行**——幸好 `_execute` 已用 `kline.close` 设 avg_price,策略功能不垮,但 avg_price 从未被真实 fill 价 refine
 
-**健壮修法(cover 所有可能)**:
+**健壮修法(已应用,cover 所有可能)**:
 ```python
-raw = str(trade.direction).lower()
-direction = "buy" if raw in ("buy", "0", "买") else "sell"
+# 当前全队 pattern (commit f3cd0d4):
+("buy" if str(trade.direction).lower() in ("buy", "0", "买") else "sell")
 ```
 
-**不急着改**,等上实盘 DIAG print 确认 `trade.direction` 实际输出再动(稳妥)。
+**AL V8 额外加 DIAG 打印** `[BUG_B_DIAG] direction={trade.direction!r}`,首次实盘成交后看真实值。
 
 ---
 
