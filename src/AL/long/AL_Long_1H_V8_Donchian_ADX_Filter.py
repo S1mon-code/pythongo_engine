@@ -844,13 +844,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.state_map.signal = round(raw, 3)
         self.state_map.forecast = round(forecast, 1)
 
-        if forecast <= 0:
-            self.output(
-                f"[启动评估] forecast=0 (live={live_price:.1f}), 等下一根 bar"
-            )
-            return
-
-        # Re-entry guard: 同一 bar 止损过不重入
+        # Re-entry guard: 同一 bar 止损过不重入 (forecast 判断之前检查,
+        # 因为即使 forecast>0 也要被 guard 拦截)
         cur_bar_ts = self._current_bar_ts()
         if self._last_exit_bar_ts >= cur_bar_ts:
             self.output(
@@ -863,6 +858,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                    f"bar_ts={cur_bar_ts} last_exit={self._last_exit_bar_ts}")
             return
 
+        # 仓位计算
         atr_arr = _atr(highs, lows, closes)
         optimal_raw = calc_optimal_lots(
             forecast, atr_arr[bar_idx], close,
@@ -874,41 +870,102 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         target = apply_buffer(optimal, net_pos)
         target = min(target, p.max_lots)
 
-        if target <= net_pos:
-            self.output(
-                f"[启动评估] target={target} ≤ net_pos={net_pos}, 无需入场"
+        # forecast=0 强制平仓 (2026-04-20 修复: 原来 return,隔夜持仓信号消失时不平仓)
+        if forecast == 0 and net_pos > 0:
+            target = 0
+
+        # ──── 4 分支决策: 开/加 / 平 / 减 / 持 ────
+        # 2026-04-20 扩展: 原来只处理 target > net_pos, 漏了隔夜持仓 +
+        # 18:00 清算 + 21:00 重开的完整生命周期
+
+        if target > net_pos:
+            # 开仓 / 加仓 — 走 executor 完整状态机
+            # 保证金预检
+            acct = self._get_account()
+            if acct and close * self._multiplier * target * 0.15 > acct.available * 0.6:
+                self.output(f"[启动评估] 保证金不足, 跳过 target={target}")
+                feishu("error", p.instrument_id,
+                       f"**启动评估保证金不足** 目标 {target}手")
+                return
+
+            bar_total = _freq_to_sec(p.kline_style)
+            actions = self._entry.on_signal(
+                target=target, direction="buy",
+                now=datetime.now(), current_position=net_pos,
+                forecast=forecast, bar_total_sec=bar_total,
             )
-            return
+            for a in actions:
+                self._apply_entry_action(a)
 
-        # 保证金预检 (与 _on_bar / _execute 一致)
-        acct = self._get_account()
-        if acct and close * self._multiplier * target * 0.15 > acct.available * 0.6:
-            self.output(f"[启动评估] 保证金不足, 跳过 target={target}")
-            feishu("error", p.instrument_id,
-                   f"**启动评估保证金不足** 目标 {target}手")
-            return
+            self._pending_reason = (
+                f"[启动评估] live={live_price:.1f} signal={raw:.3f} "
+                f"forecast={forecast:.1f} optimal={optimal} target={target}"
+            )
+            self.output(
+                f"[启动评估] 开/加仓 → executor target={target} "
+                f"net_pos={net_pos} live={live_price:.1f}"
+            )
+            feishu("info", p.instrument_id,
+                   f"**启动评估 开/加仓** target={target}手 buy (from net_pos={net_pos})\n"
+                   f"live={live_price:.1f} signal={raw:.3f} forecast={forecast:.1f}")
 
-        bar_total = _freq_to_sec(p.kline_style)
-        actions = self._entry.on_signal(
-            target=target, direction="buy",
-            now=datetime.now(), current_position=net_pos,
-            forecast=forecast, bar_total_sec=bar_total,
-        )
-        for a in actions:
-            self._apply_entry_action(a)
+        elif target == 0 and net_pos > 0:
+            # 平仓 — 信号消失 / forecast=0 (隔夜持仓 + 信号反转最常见)
+            sell_price = self._aggressive_price(live_price or close, "sell", urgency="urgent")
+            oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=net_pos, price=sell_price, order_direction="sell",
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, net_pos, sell_price,
+                                 urgency="urgent", direction="sell", kind="close")
 
-        self._pending_reason = (
-            f"[启动评估] live={live_price:.1f} signal={raw:.3f} "
-            f"forecast={forecast:.1f} optimal={optimal} target={target}"
-        )
-        self.output(
-            f"[启动评估] 触发 executor.on_signal target={target} "
-            f"net_pos={net_pos} live={live_price:.1f}"
-        )
-        feishu("info", p.instrument_id,
-               f"**启动评估入场** target={target}手 buy\n"
-               f"live={live_price:.1f} signal={raw:.3f} forecast={forecast:.1f}\n"
-               f"net_pos={net_pos} optimal={optimal}")
+            pnl_pct = ((live_price or close) - self.avg_price) / self.avg_price * 100 \
+                      if self.avg_price > 0 else 0
+            self._pending_reason = f"[启动评估] forecast=0 强制平仓"
+            self._last_exit_bar_ts = self._current_bar_ts()
+            self.output(
+                f"[启动评估] 平仓 {net_pos}手 @ {sell_price:.1f} (forecast=0)"
+            )
+            feishu("close", p.instrument_id,
+                   f"**启动评估 平仓** {net_pos}手 @ {sell_price:,.1f}\n"
+                   f"forecast=0 (原 {forecast:.1f}) 信号消失\n"
+                   f"盈亏: {pnl_pct:+.2f}% live={live_price:.1f}")
+            self._save()
+
+        elif target < net_pos and target > 0:
+            # 减仓 — 信号减弱
+            reduce_vol = net_pos - target
+            sell_price = self._aggressive_price(live_price or close, "sell", urgency="normal")
+            oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=reduce_vol, price=sell_price, order_direction="sell",
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, reduce_vol, sell_price,
+                                 urgency="normal", direction="sell", kind="reduce")
+
+            self._pending_reason = (
+                f"[启动评估] 减仓 {net_pos}→{target} (forecast={forecast:.1f} optimal={optimal})"
+            )
+            self.output(
+                f"[启动评估] 减仓 {reduce_vol}手 @ {sell_price:.1f} "
+                f"({net_pos}→{target}) forecast={forecast:.1f}"
+            )
+            feishu("reduce", p.instrument_id,
+                   f"**启动评估 减仓** {reduce_vol}手 @ {sell_price:,.1f}\n"
+                   f"净持仓: {net_pos} → {target}\n"
+                   f"forecast={forecast:.1f} optimal={optimal} live={live_price:.1f}")
+            self._save()
+
+        else:
+            # target == net_pos, 持仓与目标一致, 无动作
+            self.output(
+                f"[启动评估] 持仓一致 net_pos={net_pos}=target, "
+                f"forecast={forecast:.1f}, 无动作"
+            )
 
     # ══════════════════════════════════════════════════════════════════════
     #  Scaled Entry (2026-04-17) — 替代 VWAP 入场路径

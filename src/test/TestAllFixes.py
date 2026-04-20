@@ -386,23 +386,64 @@ class TestAllFixes(BaseStrategy):
             self.output(f"[entry异常] {type(e).__name__}: {e}")
 
     def _evaluate_startup(self) -> None:
-        """修复 #6 + #7 验证: 首 tick 评估 + re-entry guard."""
+        """修复 #6 + #7 验证 + 扩展 4 分支测试 (2026-04-20 v2).
+
+        覆盖 Simon 每日 18:00 清算 + 21:00 重开的真实场景:
+        - 若 re-entry guard 拦截 → 跳过
+        - 若当前持仓>0 → **强制平仓** (测 AL V8 target=0 分支)
+        - 若当前持仓=0 → 等 bar callback 开仓 (正常路径)
+        """
+        p = self.params_map
         cur_bar_ts = self._current_bar_ts()
+
+        # Re-entry guard 测试
         if self._last_exit_bar_ts >= cur_bar_ts:
             self.output(
                 f"[STARTUP_EVAL] re-entry guard 拦截: "
                 f"bar_ts={cur_bar_ts} ≤ last_exit={self._last_exit_bar_ts}"
             )
-            feishu("warning", self.params_map.instrument_id,
+            feishu("warning", p.instrument_id,
                    f"**[TEST] startup eval 被 re-entry guard 拦截**\n"
-                   f"cur_bar_ts={cur_bar_ts} last_exit={self._last_exit_bar_ts}\n"
-                   f"同一 bar 刚止损/平仓,不允许立刻重入场")
+                   f"cur_bar_ts={cur_bar_ts} last_exit={self._last_exit_bar_ts}")
             return
 
-        self.output(f"[STARTUP_EVAL] 首 tick 通过, bar_ts={cur_bar_ts}, 等 bar callback 生成信号")
-        feishu("info", self.params_map.instrument_id,
+        # 检查持仓 — 模拟 AL V8 的 4 分支决策
+        pos = self.get_position(p.instrument_id)
+        net_pos = pos.net_position if pos else 0
+
+        if net_pos > 0:
+            # 有隔夜持仓 → 强制平仓 (测试 target=0 → 平仓 分支)
+            # 在真实策略里这对应"隔夜持仓 + 信号消失"的 target=0 case
+            live = self._pricer.last if self._pricer else 0.0
+            sell_price = self._aggressive_price(live, "sell", urgency="urgent")
+            oid = self.auto_close_position(
+                exchange=p.exchange, instrument_id=p.instrument_id,
+                volume=net_pos, price=sell_price, order_direction="sell",
+            )
+            if oid is not None:
+                self.order_id.add(oid)
+                self._om.on_send(oid, net_pos, sell_price,
+                                 urgency="urgent", direction="sell", kind="close")
+            self._last_exit_bar_ts = self._current_bar_ts()
+            self.output(
+                f"[STARTUP_EVAL] 隔夜持仓 {net_pos}手 → 强制平仓 @ {sell_price:.1f} "
+                f"(测 target=0 分支)"
+            )
+            feishu("close", p.instrument_id,
+                   f"**[TEST] startup eval 平仓** {net_pos}手 @ {sell_price:,.1f}\n"
+                   f"模拟隔夜持仓 + 信号消失场景\n"
+                   f"bar_ts={cur_bar_ts} live={live:.1f}")
+            self._save()
+            return
+
+        # 空仓 → 通过,等 bar callback 开仓
+        self.output(
+            f"[STARTUP_EVAL] 首 tick 通过 (net_pos=0), bar_ts={cur_bar_ts}, "
+            f"等 bar callback 按奇偶开仓"
+        )
+        feishu("info", p.instrument_id,
                f"**[TEST] startup eval 通过**\n"
-               f"bar_ts={cur_bar_ts}, 可入场(无 re-entry 拦截)")
+               f"bar_ts={cur_bar_ts} net_pos=0, 无持仓无需动作")
 
     def _on_tick_stops(self, tick: TickData):
         if not self.trading:
