@@ -169,6 +169,47 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 - `on_order` 根据**中文 status** 分发 `on_order_cancel / on_order_trade` — override 时必须调 `super().on_order(order)`
 - `on_error` 默认实现自带 0004 流控,override 必须调 `throttle_on_error(self, error)` 保留流控功能
 
+### 实盘每日生命周期(无限易 18:00 清算)
+
+Simon 的无限易客户端每日 18:00-18:30 清算,强制退出所有策略进程。21:00 前必须手动重开。
+AL V8 (+ 启用了 startup eval 的策略) 全周期覆盖:
+
+```
+17:00  持仓 2 手 long, forecast=8, 正常运行
+         _save() 持久化 state.json (含 executor state + last_exit_bar_ts)
+
+18:00  无限易清算 → strategy 进程退出
+         持仓保留到 broker (INFINIGO 也重启)
+         state.json 最后一次写入保留
+
+21:00  Simon 手动重开策略
+         on_start 流程:
+         1. load_state() 恢复 avg_price / peak_price / _last_exit_bar_ts
+         2. RiskManager.on_day_change(balance, position_profit)
+            → 剔除过夜浮盈, 基线正确 ✓
+         3. executor.load_state() (若有 pending_orders → force_lock)
+         4. get_position() 从 broker 查当前持仓
+         5. super().on_start() → trading=True
+         6. _needs_startup_eval = True
+
+21:00:30  首个实盘 tick 进来
+          _pricer.update(tick) → last/bid1/ask1 就绪
+          _rvwap.update(...) → VWAP 累积
+          _evaluate_startup() 触发:
+          ├─ 读 producer 历史 + 实盘价 re-check signal
+          ├─ 算 forecast / target (含 apply_buffer)
+          ├─ 4 分支决策:
+          │   • target > net_pos → 开/加仓 (走 executor 完整状态机)
+          │   • target = 0 且 net_pos > 0 → 强制平仓 (auto_close_position urgent)
+          │   • target < net_pos 且 > 0 → 减仓 (auto_close_position normal)
+          │   • target = net_pos → 持仓一致, 无动作
+          └─ 飞书推送 "[启动评估 开/平/减/持]"
+
+21:00:35+ 正常实盘循环
+```
+
+**关键**:4 分支保证隔夜任何信号变化都在 1 个 tick 内(~5 秒)响应,不会等下一根 bar close。
+
 ### 模块导入模板 (2026-04-20 更新)
 
 每个策略文件的模块导入保持一致(与 TestFullModule / TestScaledEntry / TestAllFixes 对齐):
@@ -252,19 +293,42 @@ from modules.error_handler import throttle_on_error
 
 ## 迭代历史
 
-### 2026-04-20 — Fleet-wide 修复 + 文档完整化
+### 2026-04-20 — Fleet-wide 修复 + 文档完整化 + 跨日生命周期
 
-- **PythonGO V2 源码审计**: 读完 28 个源文件 (除 core.pyd 二进制), 生成 `docs/pythongo/` 8 md 共 3135 行完整对照文档
-- **发现并修复 2 个 fleet-wide bug**:
-  - **Bug A**: `order.volume` 不存在 (OrderData 只有 cancel_volume/total_volume/traded_volume) — 26 处修复 in 24 文件
-  - **Bug B**: `trade.direction` 是 `"0"/"1"` 不是中文 — 37 处健壮识别 in 30 文件 + AL V8 DIAG
-- **市价单 → 限价单**: `market=True` 全部改 `market=False` — 25 处 in 9 文件
+**PythonGO V2 源码审计** (morning)
+- 读完 28 个源文件 (除 core.pyd 二进制), 生成 `docs/pythongo/` 8 md 共 3135 行完整对照文档
+
+**Fleet-wide bug 修复** (midday)
+- **Bug A**: `order.volume` 不存在 — 26 处修复 in 24 文件 (sed 批量)
+- **Bug B**: `trade.direction` 是 `"0"/"1"` 不是中文 — 37 处健壮识别 in 30 文件 + AL V8 DIAG
+- **market=True → market=False**: 25 处 in 9 文件
 - **0004 流控**: 新增 `modules/error_handler.py` + 32 策略文件接入 `throttle_on_error`
-- **AL V8 crash recovery**: executor `get_state/load_state/force_lock` + on_start 遗留订单处理
-- **AL V8 startup eval**: 首 tick 就绪时评估历史信号,避免等下一 bar (方案 C + 实盘价 re-check + re-entry guard)
-- **AL V8 overnight fix**: `RiskManager.on_day_change(balance, position_profit)` 剔除过夜浮盈
-- **新增 TestAllFixes.py**: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
-- **pytest**: 146 → 154 passing (+8 error_handler tests)
+
+**AL V8 生产级增强** (afternoon)
+- **crash recovery**: executor `get_state/load_state/force_lock` + on_start 遗留订单处理
+- **startup eval 4 分支决策** (v2, evening):
+  - `target > net_pos` → 开/加仓 (executor)
+  - `target == 0 + net_pos > 0` → **强制平仓** (覆盖隔夜信号消失)
+  - `target < net_pos + target > 0` → **减仓** (覆盖隔夜信号减弱)
+  - `target == net_pos` → 持仓一致,无动作
+- **re-entry guard**: `_last_exit_bar_ts` 防同 bar 重入场
+- **overnight fix**: `on_day_change(balance, position_profit)` 剔除过夜浮盈
+
+**A+ Overnight fix 全队 propagate** (evening)
+- 58 处 in 17 策略 + test files: `on_day_change(balance)` → `on_day_change(balance, position_profit)`
+- 所有隔夜策略 daily_stop 基线正确(其他 3 项增强仍 AL V8 独家)
+
+**实盘验证** (11:23 on 2026-04-20)
+- ✅ Bug B direction 实盘证据:`direction='0'` (买) / `direction='1'` (卖),源码文档完全正确
+- ✅ market=False 全部报单"是否市价=否"
+- ✅ executor BOTTOM → OPP 状态转换流畅
+- ✅ SHFE offset=3 平今自动处理
+- 🐛 **踩坑**:合约代码必须小写 (`al2607` 不是 `AL2607`),大写订阅静默失败
+
+**测试 & 文档**
+- 新增 `TestAllFixes.py`: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
+- 新增 `docs/SESSION_2026_04_20.md` 完整 session 记录
+- **pytest**: 146 → **154** passing (+8 error_handler tests)
 
 ### 2026-04-17 — 止损重构 + Scaled Entry
 

@@ -52,14 +52,20 @@ from pythongo.utils import KLineGenerator, Scheduler
 
 ---
 
-# ✅ 已修复 Bug(2026-04-20,commits `0a116b5` + `f3cd0d4`)
+# ✅ 已修复 Bug(2026-04-20,全部 **实盘验证完成**)
 
 **修复状态总览**(见 `docs/SESSION_2026_04_20.md`):
 - **Bug A**:30 文件 26 处 `order.volume` → `order.cancel_volume` ✓
-- **Bug B**:30 文件 36 处 `"买" in str(trade.direction)` → 健壮模式(cover `"0"` / `"1"` / `"buy"` / `"sell"` / `"买"` / `"卖"`) ✓
-- **market=True**:9 文件 25 处全改 `market=False` ✓
+- **Bug B**:30 文件 36 处 `"买" in str(trade.direction)` → 健壮模式 ✓
+  - **实盘证据**(11:23 on 2026-04-20):`direction='0'`(买)/ `direction='1'`(卖),源码文档完全正确
+- **market=True**:9 文件 25 处全改 `market=False` ✓(实盘报单显示"是否市价=否")
 - **on_error 流控**:新增 `modules/error_handler.py` + 32 文件接入 `throttle_on_error` ✓
-- **验证**:`src/test/TestAllFixes.py` 8 项 smoke test + pytest 154/154 绿 ✓
+- **AL V8 startup eval 4 分支**:开/平/减/持 覆盖隔夜重启完整场景 ✓
+- **A+ overnight fix 全队 propagate**:58 处 `on_day_change(balance)` → `on_day_change(balance, position_profit)` ✓
+
+**验证**:`src/test/TestAllFixes.py` 8 项 smoke test + pytest 154/154 绿 + 实盘 11:23 run 全部正常 ✓
+
+**13 commits**:`3a262d0` → `f4bbb2a`
 
 ---
 
