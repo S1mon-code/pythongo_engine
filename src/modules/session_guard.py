@@ -81,7 +81,12 @@ class SessionGuard:
         return hour * 60 + minute
 
     def _in_session(self) -> bool:
-        """判断当前时刻是否落在任一交易时段内。"""
+        """判断当前时刻是否落在任一交易时段内.
+
+        区间约定: [start, end) — 包含 start 不含 end.
+        这样相邻 sessions(如早盘上段结束 10:15 = 茶歇开始)边界正确,
+        不会重复包含。与 `contract_info._is_time_in_session` 对齐 (2026-04-20)。
+        """
         now = datetime.now()
         cur = self._to_minutes(now.hour, now.minute)
 
@@ -90,12 +95,12 @@ class SessionGuard:
             end = self._to_minutes(end_h, end_m)
 
             if start <= end:
-                # 普通时段，如 09:00-11:30
-                if start <= cur <= end:
+                # 普通时段，如 09:00-10:15 (茶歇开始 10:15 被正确排除)
+                if start <= cur < end:
                     return True
             else:
                 # 跨午夜时段，如 21:00-02:30
-                if cur >= start or cur <= end:
+                if cur >= start or cur < end:
                     return True
 
         return False

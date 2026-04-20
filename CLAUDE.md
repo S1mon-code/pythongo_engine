@@ -158,6 +158,8 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 
 - **合约代码必须小写**:`al2607` / `i2509` / `cu2506` — **不是** `AL2607`。大写订阅无声失败(无 tick 进来,on_tick 永不触发),本地 log 只到 `策略初始化完毕` 就卡住 (2026-04-20 实盘确认)
 - **`_save()` 必须 null-guard**:`on_start` 中途失败(如合约代码错)时,`self._risk = RiskManager(...)` 可能没跑到 → `self._risk` 保持 None → `on_stop` 调 `_save()` → `NoneType.get_state()` AttributeError。所有策略的 `_save` 用 `state.update(self._risk.get_state() if self._risk is not None else {})` 保护 (2026-04-20 实盘 log L167-208 发现并修复,31 文件)
+- **商品期货早盘有 10:15-10:30 茶歇**:所有 SHFE / DCE / CZCE / GFEX / INE 商品品种早盘是 `09:00-10:15 + 10:30-11:30`(**不是连续的 09:00-11:30**)。茶歇期间 broker 拒单。`contract_info.py` sessions 已按此拆分,**CFFEX 股指/国债 09:30-11:30 连续无茶歇**保持不变 (2026-04-20 Simon 指出)
+- **区间约定 `[start, end)`**:`SessionGuard._in_session()` 用 `start <= cur < end`,end 边界排除。好处:相邻 session(如早盘上段 10:15 = 茶歇 10:15)边界不重叠,10:15 整分属于茶歇,正确返 False。
 - `get_account_fund_data("")` 会崩溃，必须先 `get_investor_data(1)` 拿investor_id
 - `self.output()` 替代 `print()`
 - **禁止** `market=True` 市价单 — SHFE 等市场拒单(2026-04-20 全队移除 25 处)
@@ -332,12 +334,18 @@ from modules.error_handler import throttle_on_error
 - ✅ 暂停期间 broker 延迟成交,on_trade 正确处理
 - 🐛 **踩坑 2**:`_save()` 在 `_risk=None` 时 AttributeError(on_start 中途失败场景)→ 31 文件加 null-guard
 
+**Session 边界修复** (Simon 指出 10:15-10:30 茶歇)
+- 🐛 **踩坑 3**:`contract_info.py` 70 个非 CFFEX 品种早盘都是连续 `((9, 0), (11, 30))`,漏了 **10:15-10:30 茶歇**。茶歇期间 broker 拒单但策略以为在 session → errCode 0004 刷屏
+- 修:批量拆成 `((9, 0), (10, 15)), ((10, 30), (11, 30))`(81 处替换)
+- 同时修 `SessionGuard._in_session` 边界:`start <= cur <= end` → `start <= cur < end`(`[start, end)` 区间),与 `contract_info._is_time_in_session` 对齐
+- **37 新 pytest** 覆盖茶歇/夜盘跨午夜/CFFEX 无茶歇/sim_24h/flatten_zone
+
 **测试 & 文档**
 - 新增 `TestAllFixes.py`: 817 行 smoke test,覆盖 8 项修复,每 2 bar 高频信号触发
 - 新增 `docs/SESSION_2026_04_20.md` 完整 session 记录
 - 保留 `logs/StraLog.txt` 作历史证据,后续新 log gitignore
-- **pytest**: 146 → **154** passing (+8 error_handler tests)
-- **commits**: 15 个 (`3a262d0` → `2e49cf5`)
+- **pytest**: 146 → **191** passing (+8 error_handler + 37 session_guard)
+- **commits**: 17 个 (`3a262d0` → 最新)
 
 ### 2026-04-17 — 止损重构 + Scaled Entry
 
