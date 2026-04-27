@@ -119,6 +119,17 @@ pos = self.get_position(instrument_id).net_position
   ```
 - AccountData属性: balance, available, position_profit, close_profit, margin, commission, risk
 - 建议在on_start中缓存investor_id，后续复用
+- **`Field(title=...)` 不能含特殊字符** (逗号 `,` / 等号 `=` / 大于号 `>` / 括号 `(` `)`).
+  `pythongo/base.py::__package_params` 把 title 当 key 反查 `model_fields`,含特殊字符
+  时被截断 → `KeyError`. 详细说明只放代码注释,title 必须是简洁中文.
+  ```python
+  # ❌ 启动崩溃:
+  takeover_lots: int = Field(default=0, title="启动接管手数(0=按state恢复, >0=手动接管)")
+  # ✅ 正确:
+  # takeover_lots: 启动时手动指定接管手数 (0=按 state 恢复; >0=手动接管, 覆盖 state)
+  takeover_lots: int = Field(default=0, title="启动接管手数")
+  ```
+  (2026-04-27 takeover 推广实盘发现 + 7 文件修复)
 
 ### PythonGO数据特点
 - **只提供tick数据** — K线全靠KLineGenerator从tick合成

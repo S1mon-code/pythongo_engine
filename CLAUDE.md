@@ -160,6 +160,7 @@ IDLE → BOTTOM → OPPORTUNISTIC → FORCE → COMPLETE → IDLE
 - **`_save()` 必须 null-guard**:`on_start` 中途失败(如合约代码错)时,`self._risk = RiskManager(...)` 可能没跑到 → `self._risk` 保持 None → `on_stop` 调 `_save()` → `NoneType.get_state()` AttributeError。所有策略的 `_save` 用 `state.update(self._risk.get_state() if self._risk is not None else {})` 保护 (2026-04-20 实盘 log L167-208 发现并修复,31 文件)
 - **商品期货早盘有 10:15-10:30 茶歇**:所有 SHFE / DCE / CZCE / GFEX / INE 商品品种早盘是 `09:00-10:15 + 10:30-11:30`(**不是连续的 09:00-11:30**)。茶歇期间 broker 拒单。`contract_info.py` sessions 已按此拆分,**CFFEX 股指/国债 09:30-11:30 连续无茶歇**保持不变 (2026-04-20 Simon 指出)
 - **区间约定 `[start, end)`**:`SessionGuard._in_session()` 用 `start <= cur < end`,end 边界排除。好处:相邻 session(如早盘上段 10:15 = 茶歇 10:15)边界不重叠,10:15 整分属于茶歇,正确返 False。
+- **`Field(title=...)` 不能含特殊字符**(逗号/等号/大于号/括号):`pythongo/base.py::__package_params` 把 title 当 key 反查 `model_fields`,含 `,/=/>/( )` 时被截断 → `KeyError`。例:`title="启动接管手数(0=按state恢复, >0=手动接管)"` 启动崩溃,简化为 `title="启动接管手数"` 后正常,详细说明只放代码注释 (2026-04-27 takeover 推广实盘发现 + 7 文件修复)
 - `get_account_fund_data("")` 会崩溃，必须先 `get_investor_data(1)` 拿investor_id
 - `self.output()` 替代 `print()`
 - **禁止** `market=True` 市价单 — SHFE 等市场拒单(2026-04-20 全队移除 25 处)
@@ -293,8 +294,78 @@ from modules.error_handler import throttle_on_error
 | `src/test/TestAllFixes.py` | ★ 2026-04-20 修复 smoke test (高频信号) |
 | `src/DailyReporter.py` | 全账户监控 |
 | `tests/test_*.py` | ★ 154 个 pytest 单元测试 (6 文件) |
+| **`docs/STRATEGY_STANDARD_V2.md`** | **★ 新策略模版标准 (2026-04-24 确立, 所有新策略必须按此写)** |
+
+## 新策略模版标准 V2 (2026-04-24 — 所有新策略必须遵循)
+
+**详细规范见 [`docs/STRATEGY_STANDARD_V2.md`](docs/STRATEGY_STANDARD_V2.md)**
+
+### 核心要素 (速查)
+
+1. **自管持仓** — `self._own_pos` + `self._my_oids` 过滤, `on_trade` 入口拦截非本策略成交
+2. **Max 5 手** — 5 道硬保险 (常量 / Params 默认 / on_start 拉回 / target 截断 / on_trade 截断)
+3. **UI 全量** — state_map 40+ 字段 (含 heartbeat / last_price / bid1/ask1 / spread_tick / 各指标值)
+4. **主/副图** — 主图 4 条价格线 (Donchian + Chandelier), 副图 3 条振子线
+5. **双写日志** — `_log(msg)` = `self.output()` + `print(flush=True)`, 实时落盘
+6. **16 个日志 tag 全覆盖** (除 `[TICK #N]` 不打)
+7. **周期 UI 刷新** — 每 10 tick 调 `update_status_bar()`
+8. **Type-safe widget push** — NaN→0 兜底, 首次推送日志, widget=None 告警
+
+### 7 个参考实现 (已部署, 新标准)
+
+**V8 家族 (Donchian + ADX):** `AL / CU / HC` (SHFE有色)
+**V13 家族 (Donchian + MFI):** `AG` (SHFE贵金属) + `P / PP / JM` (DCE)
+
+所有 7 个都在 `src/{品种}/long/` 下,命名 `{品种}_Long_1H_V{N}_{指标}.py`
+
+### 测试模版
+
+- `src/test/AL_Long_M1_Test_Oscillator.py` — M1 振子 (12-bar 周期), 覆盖 OPEN/ADD/REDUCE/CLOSE 全路径
+
+### 新策略 Checklist (抄文档 §9)
+
+写完后 `python -c "import ast; ast.parse(open('file.py').read())"` 语法通过 +
+5 道 max_lots 保险齐全 + 14 个模块全导入 + 16 个日志 tag 全有 + 类名 = 文件名
+
+### ANNUAL_FACTOR 对照
+
+| 交易所分类 | H1 bars/day | ANNUAL_FACTOR |
+|---|---|---|
+| SHFE 有色/黑色 (夜盘01:00) | 8 | `252 × 8` |
+| SHFE 贵金属 (夜盘02:30) | 10 | `252 × 10` |
+| DCE/CZCE (夜盘23:00) | 6 | `252 × 6` |
+| CFFEX 无夜盘 | 5-6 | `252 × 5` |
+| GFEX 无夜盘 | 4 | `252 × 4` |
 
 ## 迭代历史
+
+### 2026-04-24 — 新标准模版确立 (V2) + 7 品种部署
+
+**新标准核心 (详见 `docs/STRATEGY_STANDARD_V2.md`):**
+- 自管持仓 — my_oids 过滤 + own_pos 决策, broker 其他仓位完全不碰
+- Max 5 手硬上限 — 5 道保险 (常量/Params/on_start/target/on_trade)
+- UI 全量展示 — 40+ state_map 字段, 实时 tick 级刷新, heartbeat 肉眼观察
+- 双写日志 `_log()` — output() + print(flush=True), 实时落盘
+- 16 个日志 tag 覆盖全决策路径
+- Type-safe widget push (NaN→0, 首次推送日志)
+
+**7 个生产策略部署** (2 个信号家族):
+- **V8 家族 (Donchian + ADX):** AL (al2607) / CU (cu2606) / HC (hc2510) — SHFE 有色/黑色
+- **V13 家族 (Donchian + MFI):** AG (ag2606, SHFE贵金属) / P (p2609) / PP (pp2606) / JM (jm2605) — DCE
+
+**架构简化** (V8 对比旧版):
+- 砍掉 ScaledEntryExecutor (executor 状态机)
+- 砍掉 VWAP executor (分批执行)
+- 砍掉 startup_eval (不再接管 broker 历史仓位)
+- 砍掉 crash recovery 复杂逻辑
+- 直接 `send_order` / `auto_close_position` + AggressivePricer 穿盘口 + OrderMonitor escalator
+
+**测试模版** (已实盘验证 OK):
+- `src/test/AL_Long_M1_Test_Oscillator.py` — M1 振子, 12-bar 周期触发全路径
+- 1500+ UI push 成功, Oscillator OPEN→ADD×4→NO_ACT→REDUCE×4→CLOSE 全跑通
+- 验证 `on_trade` 过滤正确 (broker_pos=own_pos+1, 预有的 1 手 broker 仓不被策略碰)
+
+**18 项上线前检查全通过** (见 `docs/STRATEGY_STANDARD_V2.md` §9)
 
 ### 2026-04-20 — Fleet-wide 修复 + 文档完整化 + 跨日生命周期
 

@@ -16,6 +16,13 @@ class BaseParams(BaseModel, validate_assignment=True):
 - 映射关系展示在「PythonGO 窗口 - 参数」,可界面编辑
 - `title` 参数作为界面显示的中文名
 
+> ⚠️ **踩坑** (2026-04-27 takeover 实盘): `title` **不能含特殊字符** (逗号 `,` /
+> 等号 `=` / 大于号 `>` / 括号 `( )`). `pythongo/base.py:84 __package_params`
+> 把 title 当 key 反查 `model_fields`, 含特殊字符时被截断 → `KeyError`. 例:
+> `title="启动接管手数(0=按state恢复, >0=手动接管)"` 启动崩溃报
+> `KeyError: '启动接管手数(0=按state恢复, >0='` (在 `, >0=` 处被截).
+> 详细说明只能放代码注释, title 必须是简洁中文.
+
 ## BaseState — 状态映射模型
 
 ```python

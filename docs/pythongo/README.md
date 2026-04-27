@@ -65,6 +65,7 @@ from pythongo.utils import KLineGenerator, Scheduler
 - **`_save()` null-guard**(commit `cba9b0b`,实盘 log 发现):31 文件加 `if self._risk is not None` 保护,避免 on_start 中途失败时 `_risk=None` 的 AttributeError
 - **商品期货早盘 10:15-10:30 茶歇**(Simon 指出):`contract_info.py` 70 个非 CFFEX 品种早盘从 `((9,0),(11,30))` 拆成 `((9,0),(10,15)), ((10,30),(11,30))`。`SessionGuard` 边界改为 `[start, end)` 与 `contract_info` 对齐。新增 37 pytest
 - **开盘后 30 秒 grace**(Simon 指出"开盘后再挂单"):`SessionGuard(open_grace_sec=30)` 新参数,session 开始后 30 秒内 `should_trade()` 返 False,避开 broker 开盘瞬间 rush。32 策略全队接入。新增 `seconds_since_session_start()` helper + 9 pytest
+- **`Field(title=...)` 特殊字符崩溃**(2026-04-27 takeover 推广实盘发现): `pythongo/base.py:84 __package_params` 把 title 当 key 反查 `model_fields`,含逗号 `,` / 等号 `=` / 大于号 `>` / 括号 `( )` 时被截断 → `KeyError`。修复:7 个生产策略 title 全部从 `"启动接管手数(0=按state恢复, >0=手动接管)"` 简化为 `"启动接管手数"`,详细说明只放代码注释。**自此约定:`title` 必须是简洁中文 + ASCII 字母数字,不可含特殊符号**。详见 `docs/pythongo/base.md` 踩坑提示
 
 **实盘双轮验证**(2026-04-20):
 - **第一轮 11:23**: Bug B direction 结案 + market=False 生效 + executor 状态机正常
