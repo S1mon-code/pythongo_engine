@@ -1,6 +1,6 @@
 """
 ================================================================================
-  AL_Long_1H_V8 — Donchian + ADX, H1触发, 最多5手, 自管持仓 (新标准)
+  HC_Long_1H_V8 — Donchian + ADX, H1触发, 最多5手, 自管持仓 (新标准)
 ================================================================================
 
   信号: Donchian 通道突破 + ADX>22 + PDI>MDI → [0, 1]
@@ -55,7 +55,7 @@ from modules.trading_day import get_trading_day
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
-STRATEGY_NAME = "AL_Long_1H_V8"
+STRATEGY_NAME = "HC_Long_1H_V8"
 
 # Donchian + ADX 信号参数 (from QBase_v3 research)
 DC_PERIOD = 40
@@ -248,7 +248,7 @@ def _nz_last(arr, idx: int, fallback: float) -> float:
 
 class Params(BaseParams):
     exchange: str = Field(default="SHFE", title="交易所代码")
-    instrument_id: str = Field(default="al2607", title="合约代码")
+    instrument_id: str = Field(default="hc2510", title="合约代码")
     kline_style: str = Field(default="H1", title="K线周期")
     max_lots: int = Field(default=MAX_LOTS, title="最大持仓(硬上限5)")
     capital: float = Field(default=1_000_000, title="配置资金")
@@ -315,8 +315,8 @@ class State(BaseState):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
-    """电解铝 H1 做多 — 新标准版 (自管持仓 + 全 UI + 全日志)."""
+class HC_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
+    """热卷 H1 做多 — 新标准版 (自管持仓 + 全 UI + 全日志)."""
 
     def __init__(self):
         super().__init__()

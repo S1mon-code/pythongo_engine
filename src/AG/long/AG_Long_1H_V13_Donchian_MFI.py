@@ -1,14 +1,19 @@
 """
 ================================================================================
-  AL_Long_1H_V8 — Donchian + ADX, H1触发, 最多5手, 自管持仓 (新标准)
+  AG_Long_1H_V13 — Donchian + MFI, H1触发, 最多5手, 自管持仓 (白银做多, 新标准)
 ================================================================================
 
-  信号: Donchian 通道突破 + ADX>22 + PDI>MDI → [0, 1]
+  信号: Donchian 全通道位置 + MFI 量价确认 → [0, 1]
+    移植自 QBase_v3 strategies/candidates/AGLongV13DonchianMfi
+    don_sig: close 在通道上半段 → clip((pos-0.5)*3, 0, 1) (pos=0.5 中轴)
+    mfi_sig: MFI > floor 50 时 → clip((mfi-50)/30, 0, 1)
+    combined: 0.6 × don_sig + 0.4 × mfi_sig
+
   频率: H1 (1小时K线)
   执行: 直接限价单 (AggressivePricer 穿盘口) + escalator 自动升级 urgency
   图表:
     主图: Donchian上沿(DC_U) + 中轴(DC_M) + 下沿(DC_L) + Chandelier止损线
-    副图: ADX + PDI + MDI
+    副图: MFI (0-100, 含 50 参考线提示 floor)
 
   新标准 (2026-04-24 统一):
     1. 自管持仓 — self._own_pos + self._my_oids 过滤, 不碰 broker 其他仓
@@ -55,24 +60,24 @@ from modules.trading_day import get_trading_day
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
-STRATEGY_NAME = "AL_Long_1H_V8"
+STRATEGY_NAME = "AG_Long_1H_V13"
 
-# Donchian + ADX 信号参数 (from QBase_v3 research)
-DC_PERIOD = 40
-ADX_PERIOD = 14
-ADX_THRESHOLD = 22.0
-SIGNAL_SCALE = 1.5
-WARMUP = 80
+# Donchian + MFI 信号参数 (from QBase_v3 AGLongV13DonchianMfi)
+DC_PERIOD = 50
+MFI_PERIOD = 20
+MFI_FLOOR = 50.0
+BREAKOUT_WEIGHT = 0.6     # Donchian 信号权重 (MFI 为 1 - 0.6 = 0.4)
+WARMUP = 70               # DC_PERIOD 50 + 缓冲
 
-# Chandelier Exit
+# Chandelier Exit (AG V13: mult=3.0, 比 AL V8 的 2.58 宽)
 CHANDELIER_PERIOD = 22
-CHANDELIER_MULT = 2.58
+CHANDELIER_MULT = 3.0
 
 # Vol Targeting (Carver)
 FORECAST_SCALAR = 10.0
 FORECAST_CAP = 20.0
-# AL H1 日 bar 数: 日盘 4 + 夜盘 4 ≈ 8 bars/day
-ANNUAL_FACTOR = 252 * 8
+# AG H1 日 bar 数: 日盘 3h45 + 夜盘 5h30 (21:00-02:30) ≈ 9h15 → ~10 bars/day
+ANNUAL_FACTOR = 252 * 10
 
 # 日报时间
 DAILY_REVIEW_HOUR = 15
@@ -137,84 +142,72 @@ def _donchian(highs, lows, period=20):
     return upper, lower, mid
 
 
-def _adx_with_di(highs, lows, closes, period=14):
-    """ADX with directional indicators — (adx, plus_di, minus_di)."""
-    n = len(highs)
-    nans = np.full(n, np.nan)
-    if n == 0 or n < period + 1:
-        return nans.copy(), nans.copy(), nans.copy()
+def _mfi(highs, lows, closes, volumes, period=20):
+    """Money Flow Index (0-100) — 移植自 QBase_v3 indicators/volume/mfi.py."""
+    n = len(closes)
+    if n == 0:
+        return np.array([], dtype=np.float64)
 
-    up_move = highs[1:] - highs[:-1]
-    down_move = lows[:-1] - lows[1:]
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    highs = highs.astype(np.float64)
+    lows = lows.astype(np.float64)
+    closes = closes.astype(np.float64)
+    volumes = volumes.astype(np.float64)
 
-    high_low = highs[1:] - lows[1:]
-    high_close = np.abs(highs[1:] - closes[:-1])
-    low_close = np.abs(lows[1:] - closes[:-1])
-    tr = np.maximum(high_low, np.maximum(high_close, low_close))
+    tp = (highs + lows + closes) / 3.0
+    raw_mf = tp * volumes
+    tp_diff = np.zeros(n, dtype=np.float64)
+    tp_diff[1:] = np.diff(tp)
 
-    def _wilder(values, p):
-        out = np.full(len(values), np.nan)
-        if len(values) < p:
-            return out
-        out[p - 1] = np.sum(values[:p])
-        for i in range(p, len(values)):
-            out[i] = out[i - 1] - out[i - 1] / p + values[i]
-        return out
+    pos_flow = np.where(tp_diff > 0, raw_mf, 0.0)
+    neg_flow = np.where(tp_diff < 0, raw_mf, 0.0)
 
-    sm_plus = _wilder(plus_dm, period)
-    sm_minus = _wilder(minus_dm, period)
-    sm_tr = _wilder(tr, period)
+    result = np.full(n, np.nan, dtype=np.float64)
+    pos_sum = np.sum(pos_flow[1 : period + 1])
+    neg_sum = np.sum(neg_flow[1 : period + 1])
 
-    plus_di = np.full(n, np.nan)
-    minus_di = np.full(n, np.nan)
-    valid = sm_tr > 0
-    idx = np.where(valid)[0]
-    plus_di[idx + 1] = 100.0 * sm_plus[idx] / sm_tr[idx]
-    minus_di[idx + 1] = 100.0 * sm_minus[idx] / sm_tr[idx]
+    if n > period:
+        result[period] = 100.0 if neg_sum == 0.0 else 100.0 - 100.0 / (1.0 + pos_sum / neg_sum)
 
-    di_sum = plus_di + minus_di
-    di_diff = np.abs(plus_di - minus_di)
-    dx = np.full(n, np.nan)
-    nonzero = di_sum > 0
-    dx[nonzero] = 100.0 * di_diff[nonzero] / di_sum[nonzero]
+    for i in range(period + 1, n):
+        pos_sum += pos_flow[i] - pos_flow[i - period]
+        neg_sum += neg_flow[i] - neg_flow[i - period]
+        result[i] = 100.0 if neg_sum == 0.0 else 100.0 - 100.0 / (1.0 + pos_sum / neg_sum)
 
-    adx_out = np.full(n, np.nan)
-    first_valid = period
-    dx_valid = dx[first_valid:]
-    if len(dx_valid) < period:
-        return adx_out, plus_di, minus_di
-    adx_start = first_valid + period - 1
-    adx_out[adx_start] = np.mean(dx_valid[:period])
-    for i in range(adx_start + 1, n):
-        adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i]) / period
-    return adx_out, plus_di, minus_di
+    return result
 
 
-def generate_signal(closes, highs, lows, bar_idx):
-    """Donchian 突破 + ADX 趋势 + PDI>MDI → [0, 1]. Long only."""
+def generate_signal(closes, highs, lows, volumes, bar_idx):
+    """Donchian 全通道位置 + MFI 量价确认 → [0, 1]. Long only.
+
+    移植自 QBase_v3 AGLongV13DonchianMfi._generate_signal:
+      pos = (close - lower) / (upper - lower)
+      don_sig = clip((pos - 0.5) * 3, 0, 1) if pos > 0.5 else 0
+      mfi_sig = clip((mfi - floor) / 30, 0, 1) if mfi > floor else 0
+      combined = 0.6 * don_sig + 0.4 * mfi_sig
+    """
     if bar_idx < WARMUP:
         return 0.0
-    dc_upper, _, dc_mid = _donchian(highs, lows, DC_PERIOD)
-    adx_arr, pdi_arr, mdi_arr = _adx_with_di(highs, lows, closes, ADX_PERIOD)
+    dc_upper, dc_lower, _ = _donchian(highs, lows, DC_PERIOD)
+    mfi_arr = _mfi(highs, lows, closes, volumes, MFI_PERIOD)
     close = closes[bar_idx]
     upper = dc_upper[bar_idx]
-    mid = dc_mid[bar_idx]
-    a = adx_arr[bar_idx]
-    pdi = pdi_arr[bar_idx]
-    mdi = mdi_arr[bar_idx]
-    if any(np.isnan(x) for x in (upper, mid, a, pdi, mdi)):
+    lower = dc_lower[bar_idx]
+    mfi_val = mfi_arr[bar_idx]
+    if np.isnan(upper) or np.isnan(lower) or np.isnan(mfi_val):
         return 0.0
-    if a < ADX_THRESHOLD or pdi <= mdi:
+    chan_width = upper - lower
+    if chan_width <= 0:
         return 0.0
-    if close <= mid:
-        return 0.0
-    width = upper - mid
-    if width <= 0:
-        return 0.0
-    penetration = (close - mid) / width
-    return float(np.clip(penetration * SIGNAL_SCALE, 0.0, 1.0))
+
+    pos = (close - lower) / chan_width
+    don_sig = float(np.clip((pos - 0.5) * 3.0, 0.0, 1.0)) if pos > 0.5 else 0.0
+
+    mfi_sig = 0.0
+    if mfi_val > MFI_FLOOR:
+        mfi_sig = float(np.clip((mfi_val - MFI_FLOOR) / 30.0, 0.0, 1.0))
+
+    combined = BREAKOUT_WEIGHT * don_sig + (1.0 - BREAKOUT_WEIGHT) * mfi_sig
+    return float(np.clip(combined, 0.0, 1.0))
 
 
 def chandelier_long(highs, closes, atr_arr, bar_idx):
@@ -248,7 +241,7 @@ def _nz_last(arr, idx: int, fallback: float) -> float:
 
 class Params(BaseParams):
     exchange: str = Field(default="SHFE", title="交易所代码")
-    instrument_id: str = Field(default="al2607", title="合约代码")
+    instrument_id: str = Field(default="ag2606", title="合约代码")
     kline_style: str = Field(default="H1", title="K线周期")
     max_lots: int = Field(default=MAX_LOTS, title="最大持仓(硬上限5)")
     capital: float = Field(default=1_000_000, title="配置资金")
@@ -281,14 +274,14 @@ class State(BaseState):
     bar_count: int = Field(default=0, title="bar计数")
     ui_push_count: int = Field(default=0, title="UI推送次数")
     status_bar_updates: int = Field(default=0, title="状态栏刷新次数")
-    # 信号指标值 (Donchian + ADX + Chandelier — V8 的各种信号数据)
+    # 信号指标值 (Donchian + MFI + Chandelier — V13 的各种信号数据)
     dc_upper: float = Field(default=0.0, title="DC上沿")
     dc_mid: float = Field(default=0.0, title="DC中轴")
     dc_lower: float = Field(default=0.0, title="DC下沿")
     chandelier: float = Field(default=0.0, title="Chandelier止损")
-    adx: float = Field(default=0.0, title="ADX")
-    pdi: float = Field(default=0.0, title="PDI")
-    mdi: float = Field(default=0.0, title="MDI")
+    mfi_value: float = Field(default=0.0, title="MFI")
+    don_sig: float = Field(default=0.0, title="Donchian子信号")
+    mfi_sig: float = Field(default=0.0, title="MFI子信号")
     atr: float = Field(default=0.0, title="ATR")
     # 持仓追踪
     avg_price: float = Field(default=0.0, title="均价")
@@ -315,8 +308,8 @@ class State(BaseState):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
-    """电解铝 H1 做多 — 新标准版 (自管持仓 + 全 UI + 全日志)."""
+class AG_Long_1H_V13_Donchian_MFI(BaseStrategy):
+    """白银 H1 做多 — Donchian + MFI (QBase_v3 V13), 新标准版."""
 
     def __init__(self):
         super().__init__()
@@ -360,9 +353,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._ind_dc_mid = 0.0
         self._ind_dc_lower = 0.0
         self._ind_chandelier = 0.0
-        self._ind_adx = 0.0
-        self._ind_pdi = 0.0
-        self._ind_mdi = 0.0
+        self._ind_mfi = 50.0        # 初值 50 (无偏向)
+        self._ind_mfi_floor = MFI_FLOOR   # 副图显示一条参考线
         self._ind_atr = 0.0
 
         # 诊断计数器
@@ -398,11 +390,10 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
 
     @property
     def sub_indicator_data(self):
-        """副图 (0-100 尺度): ADX + PDI + MDI."""
+        """副图 (0-100 尺度): MFI + floor 参考线 (50)."""
         return {
-            "ADX": self._ind_adx,
-            "PDI": self._ind_pdi,
-            "MDI": self._ind_mdi,
+            "MFI": self._ind_mfi,
+            "MFI_Floor": self._ind_mfi_floor,
         }
 
     def _get_account(self):
@@ -537,8 +528,8 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._log(
             "=== UI 测试清单 === (请对照检查):\n"
             "  主图: DC_U / DC_M / DC_L / Chandelier (4 条价格线)\n"
-            "  副图: ADX / PDI / MDI (3 条振子线)\n"
-            "  状态栏: heartbeat/last_price/ma 等实时字段, 每 10 tick 刷新一次\n"
+            "  副图: MFI + MFI_Floor (50, 参考线)\n"
+            "  状态栏: heartbeat/last_price/mfi_value/don_sig/mfi_sig 等实时字段\n"
             "  箭头: OPEN/ADD/REDUCE/CLOSE 会在 K 线上标记"
         )
         feishu("start", p.instrument_id,
@@ -818,12 +809,11 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         else:
             self._ind_dc_upper = self._ind_dc_mid = self._ind_dc_lower = cur
 
-        # ADX / DI
-        if n >= 2 * ADX_PERIOD + 2:
-            adx_a, pdi_a, mdi_a = _adx_with_di(highs, lows, closes, ADX_PERIOD)
-            self._ind_adx = _nz_last(adx_a, bar_idx, 0.0)
-            self._ind_pdi = _nz_last(pdi_a, bar_idx, 0.0)
-            self._ind_mdi = _nz_last(mdi_a, bar_idx, 0.0)
+        # MFI
+        volumes = np.asarray(producer.volume, dtype=np.float64)
+        if n >= MFI_PERIOD + 2:
+            mfi_arr = _mfi(highs, lows, closes, volumes, MFI_PERIOD)
+            self._ind_mfi = _nz_last(mfi_arr, bar_idx, 50.0)
 
         # ATR + Chandelier
         if n >= CHANDELIER_PERIOD + 2:
@@ -843,9 +833,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self.state_map.dc_mid = round(self._ind_dc_mid, 1)
         self.state_map.dc_lower = round(self._ind_dc_lower, 1)
         self.state_map.chandelier = round(self._ind_chandelier, 1)
-        self.state_map.adx = round(self._ind_adx, 2)
-        self.state_map.pdi = round(self._ind_pdi, 2)
-        self.state_map.mdi = round(self._ind_mdi, 2)
+        self.state_map.mfi_value = round(self._ind_mfi, 2)
         self.state_map.atr = round(self._ind_atr, 2)
 
     def _on_bar(self, kline: KLineData):
@@ -921,16 +909,34 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
         self._log(
             f"[IND] DC_U={self._ind_dc_upper:.1f} DC_M={self._ind_dc_mid:.1f} "
             f"DC_L={self._ind_dc_lower:.1f} Chandelier={self._ind_chandelier:.1f} | "
-            f"ADX={self._ind_adx:.1f} PDI={self._ind_pdi:.1f} MDI={self._ind_mdi:.1f} | "
+            f"MFI={self._ind_mfi:.1f} (floor={MFI_FLOOR}) | "
             f"ATR={self._ind_atr:.1f} close={close:.1f}"
         )
 
-        # ── 信号 ──
-        raw = generate_signal(closes, highs, lows, bar_idx)
+        # ── 信号 (Donchian + MFI 组合) ──
+        volumes = np.asarray(producer.volume, dtype=np.float64)
+        raw = generate_signal(closes, highs, lows, volumes, bar_idx)
+
+        # 子信号也算一次供 state_map 展示
+        chan_w = self._ind_dc_upper - self._ind_dc_lower
+        if chan_w > 0:
+            pos = (close - self._ind_dc_lower) / chan_w
+            don_sig = float(np.clip((pos - 0.5) * 3.0, 0.0, 1.0)) if pos > 0.5 else 0.0
+        else:
+            don_sig = 0.0
+        mfi_sig = float(np.clip((self._ind_mfi - MFI_FLOOR) / 30.0, 0.0, 1.0)) \
+                  if self._ind_mfi > MFI_FLOOR else 0.0
+        self.state_map.don_sig = round(don_sig, 3)
+        self.state_map.mfi_sig = round(mfi_sig, 3)
+
         forecast = min(FORECAST_CAP, max(0.0, raw * FORECAST_SCALAR))
         self.state_map.signal = round(raw, 3)
         self.state_map.forecast = round(forecast, 1)
-        self._log(f"[SIGNAL] raw={raw:.4f} forecast={forecast:.1f}")
+        self._log(
+            f"[SIGNAL] raw={raw:.4f} forecast={forecast:.1f} "
+            f"(don_sig={don_sig:.3f} × {BREAKOUT_WEIGHT} + "
+            f"mfi_sig={mfi_sig:.3f} × {1-BREAKOUT_WEIGHT})"
+        )
 
         # ── 仓位 (Vol Targeting Carver, max_lots 硬截断) ──
         atr_arr = _atr(highs, lows, closes)
@@ -1396,7 +1402,7 @@ class AL_Long_1H_V8_Donchian_ADX_Filter(BaseStrategy):
                     f"[WIDGET #{self._widget_ok_count}] "
                     f"signal_price={sp} "
                     f"DC_U={payload.get('DC_U', 0):.1f} "
-                    f"ADX={payload.get('ADX', 0):.1f}"
+                    f"MFI={payload.get('MFI', 0):.1f}"
                 )
             elif self._widget_ok_count % 500 == 0:
                 self._log(f"[WIDGET #{self._widget_ok_count}] 累计推送 OK")

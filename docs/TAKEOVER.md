@@ -78,9 +78,19 @@ Params 面板:
 
 ## 已实施范围 (2026-04-27)
 
-仅 **`src/JM/long/JM_Long_1H_V13_Donchian_MFI.py`**(先验证一晚再推广)。
+**全部 7 个生产策略**(JM 先做验证,其他 6 个一并推广):
 
-**待推广**:`AL` / `CU` / `HC` / `AG` / `P` / `PP`(其他 6 个生产策略)。
+| 家族 | 文件 |
+|------|------|
+| **V8** (Donchian + ADX) | `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` |
+| | `src/CU/long/CU_Long_1H_V8_Donchian_ADX_Filter.py` |
+| | `src/HC/long/HC_Long_1H_V8_Donchian_ADX_Filter.py` |
+| **V13** (Donchian + MFI) | `src/AG/long/AG_Long_1H_V13_Donchian_MFI.py` |
+| | `src/JM/long/JM_Long_1H_V13_Donchian_MFI.py` |
+| | `src/P/long/P_Long_1H_V13_Donchian_MFI.py` |
+| | `src/PP/long/PP_Long_1H_V13_Donchian_MFI.py` |
+
+7 个文件 4 处 patch 完全一致(模板对齐),232/232 pytest 全绿,`ast` 语法全部通过。
 
 ## 验证清单 (Simon 21:00 启动时)
 
@@ -97,21 +107,19 @@ Params 面板:
 - [ ] 后续 trail_stop 触发或信号反转触发时:
   - [ ] 平 N 手,broker 端剩下底仓不变
 
-## 推广前后对比 (待验证后填)
+## 推广跟踪
 
-| 项目 | 验证前 | 验证后 |
-|------|--------|--------|
-| JM | ✅ 已实施 | ⬜ 待 21:00 实盘验证 |
-| AL | ⬜ 待推广 | |
-| CU | ⬜ 待推广 | |
-| HC | ⬜ 待推广 | |
-| AG | ⬜ 待推广 | |
-| P  | ⬜ 待推广 | |
-| PP | ⬜ 待推广 | |
+| 品种 | 实施 | 实盘验证 |
+|------|------|---------|
+| JM | ✅ 2026-04-27 | ⬜ 待 21:00 实盘验证 |
+| AL | ✅ 2026-04-27 | ⬜ 同上 |
+| CU | ✅ 2026-04-27 | ⬜ 同上 |
+| HC | ✅ 2026-04-27 | ⬜ 同上 |
+| AG | ✅ 2026-04-27 | ⬜ 同上 |
+| P  | ✅ 2026-04-27 | ⬜ 同上 |
+| PP | ✅ 2026-04-27 | ⬜ 同上 |
 
-## 文件改动清单
-
-`src/JM/long/JM_Long_1H_V13_Donchian_MFI.py`:
+## 文件改动清单 (每个文件 4 处, 完全相同 patch)
 
 1. `Params` — 加 `takeover_lots: int = Field(default=0, ...)`
 2. `__init__` — 加 `self._takeover_pending = False`
