@@ -257,7 +257,8 @@ class Params(BaseParams):
     equity_stop_pct: float = Field(default=2.0, title="权益止损(%)")
     flatten_minutes: int = Field(default=5, title="即将收盘提示(分钟)")
     sim_24h: bool = Field(default=False, title="24H模拟盘模式")
-    takeover_lots: int = Field(default=0, title="启动接管手数(0=按state恢复, >0=手动接管)")
+    # takeover_lots: 启动时手动指定接管手数 (默认 0=按 state 恢复; >0=手动接管, 覆盖 state)
+    takeover_lots: int = Field(default=0, title="启动接管手数")
 
 
 class State(BaseState):

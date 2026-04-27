@@ -18,8 +18,12 @@
 
 ```
 Params 面板:
-  takeover_lots = 4    ← 启动接管手数(0=按state恢复, >0=手动接管)
+  takeover_lots = 4    ← 启动接管手数
 ```
+
+> **PythonGO 踩坑** (2026-04-27): `Field(title=...)` **不能含特殊字符**(逗号 / 等号 /
+> 大于号 / 括号),否则 `pythongo/base.py::__package_params` 会把 title 误当 key 截断,
+> 抛 `KeyError: '...'`. 详细说明只能放代码注释, title 必须是简洁中文。
 
 `takeover_lots > 0` 时,策略会:
 
