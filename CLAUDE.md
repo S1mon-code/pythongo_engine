@@ -106,7 +106,11 @@ docs/
     ├── OPERATIONAL_ISSUES_RESEARCH.md
     └── RESEARCH_REPORT.md
 
-tools/daily_report/                   # ★ 每日实盘日报 (HTML + PDF, alias 路由识别)
+tools/daily_report/                   # ★ 每日实盘日报 (HTML + PDF)
+                                       #   broker CSV 主源 (盈亏/手续费/撤单 真值)
+                                       #   StraLog 辅源 (信号/风控/原因 上下文)
+                                       #   隔夜接管孤儿平仓自动识别 (TAKEOVER 标记)
+                                       #   image_map.json 支持 hash 命名截图
 
 reports/                              # 每日 data + HTML/PDF 报告
 
@@ -331,7 +335,7 @@ from modules.error_handler import throttle_on_error
 | `src/AG/long/AG_Long_1H_V13_Donchian_MFI.py` | V13 reference (Donchian + MFI) |
 | `src/qexp_robust/` | ★ QExp 4 robust 策略 + README |
 | `src/ICT/` | ★ ICT v6 (含子 modules) + I_Bidir_M1_ICT_v6.py + README |
-| `tools/daily_report/` | 每日实盘日报 (HTML + PDF, alias 路由) |
+| `tools/daily_report/` | 每日实盘日报 (broker CSV 主源 + StraLog 辅源, HTML + PDF) |
 | `src/test/TestFullModule.py` | 全模块集成测试模板 |
 | `src/test/TestScaledEntry.py` | ★ ScaledEntryExecutor 三模式验证 |
 | `src/test/TestAllFixes.py` | ★ 2026-04-20 修复 smoke test (高频信号) |
@@ -382,6 +386,35 @@ from modules.error_handler import throttle_on_error
 
 ## 迭代历史
 
+### 2026-04-28 (晚) — daily_report 改造为 broker CSV 主源
+
+**痛点**: 旧 log 流程下,JM 21:16 的 trail_stop 隔夜接管平仓被 `pair_trades` 完全忽略
+(没今日开仓配对),日报里 0 字提及 JM。手续费没有,撤单也漏。
+
+**新方案**: 无限易客户端"实时回报"导出的 GBK CSV 成为日报真值源:
+- 41 列结构化, 每行一笔订单 (含撤单)
+- 手续费精确到分 (broker 报回, e.g. PP 4.05 / HC 13.62)
+- 平仓盈亏 = broker 逐日盯市真值 (含隔夜价差)
+- 平仓盈亏 (逐笔) = 按本笔开仓价精确算
+- StraLog 仍保留, 只用作决策上下文 (POS_DECISION / EXECUTE / IND / SIGNAL / TRAIL_STOP)
+
+**改造范围**:
+- 新增 `tools/daily_report/csv_parser.py` (220 行): GBK + 41 列 + HH:MM:SS+文件名推
+  calendar (broker"成交时间(日)"列因不同交易所标法不一致, 不可靠) + 21:00+ 时间归前一日历日
+- 扩展 `TradeLeg`: 加 `fee` / `broker_pnl` / `per_trade_pnl` / `full_name` / `is_takeover` 字段
+- 扩展 `RoundTrip`: 加 `is_takeover` 标记
+- 新增 `pair_from_csv()`: 按 instrument_id FIFO + 没找到对应开仓 → 标 TAKEOVER + log_events
+  注入决策上下文
+- `generate_report.py` 加 CSV 优先逻辑 (扫"实时回报/信息导出"*.csv) + `image_map.json`
+  支持 (hash 命名截图映射)
+- `render_html.py` 新增"当日撤单"段 + 主表加 broker盈亏/逐笔盈亏/手续费 列 + 隔夜接管橘色标签
+
+**4-28 实证**: broker 平仓盈亏 +1695, 手续费 88.30, 净盈亏 +1606.70.
+8 round-trips (含 2 takeover: JM/PP 21:16/21:20) + 3 撤单 (10:00 PP / 14:15 P / 22:00 P,
+全是 OrderMonitor escalator 触发) + 3 张盘面图 (image_map.json 接 hash 命名).
+
+302 pytest 全绿.
+
 ### 2026-04-28 — QExp + ICT 上线 + 项目结构清理
 
 **12 个生产策略部署完成** (3 大家族):
@@ -399,6 +432,7 @@ strategy_aliases.json 路由识别 11 个生产策略, 同时支持 V8/V13 forec
 风格 + QExp binary fires 风格 (PivotSpec 加 profit_target_formula 字段).
 滑点直接用 log [滑点] N.N ticks (策略 SlippageTracker 算的真滑点),
 flip 符号让正=有利与金额方向一致.
+**注**: 04-28 晚改造为 CSV 主源 (上面新条目), 这里描述的是初版 log 流程, 现作 fallback.
 
 **ICT v6 移植** (Phase 1): 自审 + code-reviewer 审, 修了 8 个 critical
 bugs (limit 单时机 / push_history double append / confirm_open 拆批 /

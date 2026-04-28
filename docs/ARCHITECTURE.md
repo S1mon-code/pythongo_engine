@@ -12,7 +12,8 @@
 > - 14 active modules + 4 legacy (留作 tests 引用)
 > - 88 品种合约规格 (含早盘 10:15-10:30 茶歇 + open_grace 30s + 14:50/22:50 hard cutoff)
 > - takeover_lots 模式 (4 处 patch, 解决 18:00 强制清算 → 21:00 重启接管)
-> - tools/daily_report/ 每日 HTML+PDF 实盘报告 (alias 路由 11 策略)
+> - tools/daily_report/ 每日 HTML+PDF 实盘报告 — broker CSV 主源 (盈亏/手续费/撤单 真值) +
+>   StraLog 辅源 (信号/风控 上下文), 隔夜接管孤儿平仓自动识别
 > - 302 pytest 全绿
 >
 > **历史 session 记录**归档在 [`docs/archive/`](archive/), 含 SESSION_2026_04_17 (Phase 3/4 tick 止损 + ScaledEntry, 现已 legacy) +
