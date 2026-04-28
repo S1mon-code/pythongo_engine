@@ -63,6 +63,12 @@ from ICT.modules.bias import DailyBias, compute_daily_bias  # noqa: E402
 from ICT.modules.state_machine import (  # noqa: E402
     Action, ActiveTrade, OTESetup, V6Config, V6StateMachine,
 )
+from ICT.modules.timezones import to_python_datetime  # noqa: E402
+
+# D1 bias 充足暖机阈值: lookback_days=20 + warmup=14 = 34 天 1m bars
+# CN 期货一天大约 240 根 1m (日盘 4h + 夜盘 4h × 60). 34 天 ≈ 8160 根 (保守 5000)
+# 实盘 push_history 通常 ≥ 1 万根 OK; 不够时仅警告不 crash
+MIN_HISTORY_BARS_FOR_BIAS = 5000
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -295,36 +301,45 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
         n_history = len(producer.close)
         self._log(f"[ON_START] push_history 完成 producer_bars={n_history}")
 
-        # 1m → D1 resample → biases
+        # 1m → D1 resample → biases (使用 producer 已 filled 的历史数据)
         timestamps_1m: list[datetime] = []
+        skipped = 0
         for dt in producer.datetime:
-            if isinstance(dt, datetime):
-                timestamps_1m.append(dt)
-            else:
-                # 兼容 numpy datetime64 / pandas timestamp
-                try:
-                    timestamps_1m.append(dt.to_pydatetime())  # pandas
-                except Exception:
-                    try:
-                        timestamps_1m.append(datetime.utcfromtimestamp(int(dt) / 1e9))
-                    except Exception:
-                        timestamps_1m.append(datetime.now())
+            py_dt = to_python_datetime(dt)
+            if py_dt is None:
+                skipped += 1
+                py_dt = datetime.now()  # last-resort, log warning below
+            timestamps_1m.append(py_dt)
+        if skipped > 0:
+            self._log(f"[ON_START WARN] {skipped} bar timestamps 无法解析, 已 fallback now()")
 
         opens_1m = list(map(float, producer.open))
         highs_1m = list(map(float, producer.high))
         lows_1m = list(map(float, producer.low))
         closes_1m = list(map(float, producer.close))
 
+        # History 充足性检查
+        if n_history < MIN_HISTORY_BARS_FOR_BIAS:
+            self._log(
+                f"[ON_START WARN] history bars {n_history} < {MIN_HISTORY_BARS_FOR_BIAS}, "
+                f"D1 bias 可能全 neutral → 永不开仓. 建议增大 push_history 深度."
+            )
+            feishu("error", p.instrument_id,
+                   f"**ICT 启动警告** {STRATEGY_NAME}\n"
+                   f"history bars 仅 {n_history} 根 (建议 ≥ {MIN_HISTORY_BARS_FOR_BIAS}).\n"
+                   f"D1 bias 可能不暖机 → 不开仓.")
+
         d1_dates, d1_h, d1_l, d1_c = _resample_1m_to_d1(
             timestamps_1m, opens_1m, highs_1m, lows_1m, closes_1m,
         )
         self._biases = compute_daily_bias(d1_h, d1_l, d1_c, d1_dates)
+        n_directional = sum(1 for b in self._biases if b.bias != "neutral")
         self._log(
-            f"[ON_START] D1 bias built: {len(d1_dates)} D1 bars, "
-            f"{sum(1 for b in self._biases if b.bias != 'neutral')} non-neutral"
+            f"[ON_START] D1 bias built: {len(d1_dates)} D1 bars from "
+            f"{n_history} 1m bars, {n_directional} non-neutral"
         )
 
-        # State machine init
+        # State machine init (不灌 push_history_bars — callback 阶段会自然 append 每根 history bar)
         cfg = V6Config(
             starting_capital=p.capital,
             risk_per_trade_pct=p.risk_per_trade_pct,
@@ -337,8 +352,10 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
             tick_size=get_tick_size(p.instrument_id),
             multiplier=self._multiplier,
         )
-        self._sm.push_history_bars(opens_1m, highs_1m, lows_1m, closes_1m, timestamps_1m)
-        self._log(f"[ON_START] state machine init: state={self._sm.state} cur_idx={self._sm.cur_idx}")
+        self._log(
+            f"[ON_START] state machine init: state={self._sm.state} "
+            f"(buffer 由 callback 阶段 append, 不在 on_start 灌入)"
+        )
 
         inv = self.get_investor_data(1)
         if inv:
@@ -479,34 +496,35 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
     def _on_tick_sm(self, tick: TickData) -> None:
         if not self.trading or self._guard is None or not self._guard.should_trade():
             return
-        if self._pending_open or self._pending_close:
-            return  # 等 broker 成交回调
+        if self._pending_close:
+            return  # 等 broker 平仓成交回调
 
         sm = self._sm
-        ts = tick.datetime if isinstance(tick.datetime, datetime) else datetime.now()
+        ts = to_python_datetime(tick.datetime) or datetime.now()
         last_price = float(tick.last_price)
 
+        # OTE_PENDING 状态: broker 自动处理 fill, 这里不需要做事
+        # FILLED 状态: 检查 stop / target / cutoff
         action = sm.on_tick(ts, last_price)
 
-        if action.kind == "fill_open":
-            self._exec_open(action)
-        elif action.kind == "exit_full":
+        if action.kind == "exit_full":
             self._exec_full_close(action)
         elif action.kind == "partial_exit":
             self._exec_partial_close(action)
 
-    def _exec_open(self, action: Action) -> None:
-        """OTE 限价单触发, 发 send_order open."""
+    def _exec_place_limit(self, action: Action) -> None:
+        """OTE setup 触发: 立即挂 OTE 限价单 (broker 自动等价 fill)."""
         p = self.params_map
         d = action.direction
         side = "buy" if d == 1 else "sell"
-        # OTE limit: 我们按策略 price 直接挂 limit (passive); broker 会等到价反向触及
-        limit_px = self._pricer.aggressive(action.price, side, urgency="passive")
+        # OTE 是 passive limit: 直接用策略给的 OTE 70.5% 价位挂单
+        # 不需要 AggressivePricer 穿盘口 — 我们就要 broker 等到价格回到 OTE 才 fill
+        limit_px = float(action.price)
         self._log(
-            f"[EXEC_OPEN] send_order {side} {action.contracts}手 @ {limit_px} (passive) "
-            f"OTE_target={action.price:.2f} stop={action.new_stop:.2f}"
+            f"[EXEC_OPEN] send_order {side} {action.contracts}手 @ {limit_px} (limit, passive) "
+            f"OTE_target={limit_px:.2f} stop={action.new_stop:.2f}"
         )
-        self._slip.set_signal_price(action.price)
+        self._slip.set_signal_price(limit_px)
         oid = self.send_order(
             exchange=p.exchange, instrument_id=p.instrument_id,
             volume=action.contracts, price=limit_px,
@@ -521,6 +539,8 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
                 "direction": d, "stop": action.new_stop,
                 "target": action.metadata.get("target", 0.0),
             }
+        else:
+            self._log(f"[EXEC_OPEN] send_order 返回 oid=None, 跳过")
 
     def _exec_partial_close(self, action: Action) -> None:
         """R-ladder partial exit."""
@@ -591,7 +611,7 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
             return
 
         # 把新 bar push 到 state machine buffer
-        ts = kline.datetime if isinstance(kline.datetime, datetime) else datetime.now()
+        ts = to_python_datetime(kline.datetime) or datetime.now()
         self._sm.append_bar(
             float(kline.open), float(kline.high), float(kline.low), float(kline.close),
             ts,
@@ -650,7 +670,8 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
                 self.state_map.target_price = action.metadata.get("target", 0.0)
                 self.state_map.last_setup_reason = action.reason
                 self._log(f"[PLACE_LIMIT] {action.reason}")
-                # 限价单实际在 on_tick 的 fill_open 触发时才发, 这里只更新 UI
+                # 立即挂限价单 (broker 自动等价 fill, 我们等 on_trade 回调)
+                self._exec_place_limit(action)
             elif action.kind == "cancel_limit":
                 for oid in list(self.order_id):
                     self.cancel_order(oid)
@@ -674,6 +695,9 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
 
     def on_trade(self, trade: TradeData) -> None:
         super().on_trade(trade)
+        if self._sm is None:
+            self._log("[ON_TRADE] _sm=None (on_start 中途失败?), 忽略")
+            return
         oid = trade.order_id
         if oid not in self._my_oids:
             self._log(f"[ON_TRADE] oid={oid} 非本策略, 跳过")
@@ -684,7 +708,11 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
         is_open = "open" in offset_str.lower() or offset_str == "0"
         vol = int(trade.volume)
         price = float(trade.price)
-        ts = trade.trade_time if hasattr(trade, "trade_time") and isinstance(trade.trade_time, datetime) else datetime.now()
+        # TradeData 时间字段名不固定 (PythonGO 版本差异): 试 trade_time / datetime / time
+        raw_ts = (getattr(trade, "trade_time", None) or
+                  getattr(trade, "datetime", None) or
+                  getattr(trade, "time", None))
+        ts = to_python_datetime(raw_ts) or datetime.now()
 
         self._log(
             f"[ON_TRADE] oid={oid} {direction!r} offset={offset_str!r} price={price} vol={vol}"
@@ -695,7 +723,7 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
             self._log(f"[滑点] {slip:.1f}ticks")
 
         if is_open and self._pending_open and oid == self._pending_open["oid"]:
-            # 开仓成交
+            # 开仓成交 — 支持 broker 拆批 (同 oid 多笔 ON_TRADE)
             old = self._own_pos
             self._own_pos += vol
             if old == 0:
@@ -706,16 +734,21 @@ class I_Bidir_M1_ICT_v6(BaseStrategy):
             self.state_map.avg_price = self.avg_price
             self.state_map.direction = "long" if direction == "buy" else "short"
             self.state_map.last_action = f"OPEN {direction.upper()} {vol}@{price}"
-            # 通知 state machine
+            # 通知 state machine (sm 内部 handle 拆批: 第 1 笔创建 trade, 后续累加)
             self._sm.confirm_open(price, vol, ts)
             self.state_map.sm_state = self._sm.state
             self.state_map.initial_stop = self._sm.trade.initial_stop if self._sm.trade else 0.0
             self.state_map.cur_stop = self._sm.trade.stop_price if self._sm.trade else 0.0
+            # 只在 broker 完全 fill 时清空 _pending_open (避免拆批第 2 笔走 "未匹配" 分支)
+            expected = self._pending_open["contracts"]
+            filled = self._sm.trade.initial_contracts if self._sm.trade else 0
             self._log(
                 f"[OPEN] own_pos→{self._own_pos} avg={self.avg_price:.2f} "
-                f"stop={self.state_map.cur_stop:.2f}"
+                f"stop={self.state_map.cur_stop:.2f} "
+                f"filled {filled}/{expected}"
             )
-            self._pending_open = None
+            if filled >= expected:
+                self._pending_open = None
             self._save()
             return
 

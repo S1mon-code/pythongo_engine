@@ -502,25 +502,15 @@ class V6StateMachine:
     # ──────────────────────────────────────────────────────────────────────
 
     def on_tick(self, ts: datetime, last_price: float) -> Action:
-        """每个 tick 调用. 状态 FILLED / OTE_PENDING 时检查触发."""
+        """每个 tick 调用. 状态 FILLED 时检查 stop/target/cutoff.
+
+        OTE_PENDING 状态下不返 fill_open — broker 收到限价单后会自动等价 fill,
+        策略只需等 on_trade 回调 → confirm_open. 我们这里只负责 FILLED 状态的出场.
+        """
         cfg = self.config
 
-        # OTE_PENDING — 检查限价单是否成交
-        if self.state == "OTE_PENDING" and self.setup is not None:
-            d = self.setup.direction
-            limit_px = self.setup.limit_price
-            # Long: 价格 ≤ limit 即 fill (tick 触及 limit)
-            # Short: 价格 ≥ limit 即 fill
-            hit = (last_price <= limit_px) if d == 1 else (last_price >= limit_px)
-            if hit:
-                # 限价单 fill (策略层会 send_order)
-                return Action(
-                    kind="fill_open",
-                    direction=d, price=limit_px, contracts=self.setup.contracts,
-                    new_stop=self.setup.stop_price,
-                    setup=self.setup,
-                    reason="limit_fill",
-                )
+        # OTE_PENDING — 不做任何事, 等 broker 自动 fill 触发 on_trade
+        if self.state == "OTE_PENDING":
             return Action(kind="noop")
 
         # FILLED — 出场检查
@@ -537,8 +527,6 @@ class V6StateMachine:
                 )
 
             # Stop hit (tick-level)
-            stop_hit = (last_price <= t.stop_price) if d == 1 else (last_price >= last_price >= t.stop_price)
-            # 修正写法
             stop_hit = (last_price <= t.stop_price) if d == 1 else (last_price >= t.stop_price)
             if stop_hit:
                 if d * (t.stop_price - t.entry_price) < 0:
@@ -631,27 +619,45 @@ class V6StateMachine:
     # ──────────────────────────────────────────────────────────────────────
 
     def confirm_open(self, fill_price: float, fill_vol: int, ts: datetime) -> None:
-        """Strategy file 收到 ON_TRADE open 回调时调用. 把 setup → trade 转换."""
-        if self.state != "OTE_PENDING" or self.setup is None:
+        """Strategy file 收到 ON_TRADE open 回调时调用.
+
+        支持拆批: 同一 OTE 限价单的多笔 ON_TRADE (broker partial fills) 会按
+        加权均价更新 entry_price + 累加 contracts.
+            - 第一笔: state OTE_PENDING → FILLED, 创建 trade, daily count +1
+            - 后续: state 已 FILLED, 累加 vol + 加权 entry, NOT count 新 trade
+        """
+        # 第一笔成交 — 从 setup 创建 trade
+        if self.state == "OTE_PENDING" and self.setup is not None:
+            s = self.setup
+            d = s.direction
+            self.trade = ActiveTrade(
+                setup="ICT_2022_LONG" if d == 1 else "ICT_2022_SHORT",
+                direction=d,
+                entry_idx=self.cur_idx,
+                entry_price=fill_price,
+                initial_stop=s.stop_price, stop_price=s.stop_price,
+                target_price=s.target_price,
+                contracts=fill_vol, initial_contracts=fill_vol,
+                sweep_level=s.sweep_level,
+                displacement_extreme=s.displacement_extreme,
+                bias=s.bias, kill_zone=s.kill_zone, pd_zone=s.pd_zone,
+                notes=[s.target_label],
+            )
+            self.setup = None
+            self.state = "FILLED"
+            self._ds(ts)["trades_today"] += 1
             return
-        s = self.setup
-        d = s.direction
-        self.trade = ActiveTrade(
-            setup="ICT_2022_LONG" if d == 1 else "ICT_2022_SHORT",
-            direction=d,
-            entry_idx=self.cur_idx,
-            entry_price=fill_price,
-            initial_stop=s.stop_price, stop_price=s.stop_price,
-            target_price=s.target_price,
-            contracts=fill_vol, initial_contracts=fill_vol,
-            sweep_level=s.sweep_level,
-            displacement_extreme=s.displacement_extreme,
-            bias=s.bias, kill_zone=s.kill_zone, pd_zone=s.pd_zone,
-            notes=[s.target_label],
-        )
-        self.setup = None
-        self.state = "FILLED"
-        self._ds(ts)["trades_today"] += 1
+
+        # 后续拆批 — 已 FILLED, 累加 vol + 加权均价
+        if self.state == "FILLED" and self.trade is not None:
+            t = self.trade
+            old_qty = t.initial_contracts
+            new_qty = old_qty + fill_vol
+            # 加权均价 (兼容原 entry 的累计成本)
+            t.entry_price = (t.entry_price * old_qty + fill_price * fill_vol) / new_qty
+            t.contracts += fill_vol
+            t.initial_contracts = new_qty
+            return
 
     def confirm_partial(self, fill_price: float, fill_vol: int, target_R: float) -> None:
         if self.state != "FILLED" or self.trade is None:
