@@ -2,7 +2,16 @@
 
 ## 概述
 
-将QBase/QBase_v2中回测验证过的量化策略，转换为PythonGO格式的.py文件，部署到Windows无限易客户端进行期货实盘交易。每个策略/组合对应一个独立的.py文件，搭配共享的modules模块层提供风控、执行、监控等基础设施。当前部署5个品种（AL/CU/I/IH/LC）6个Portfolio组合。
+将 QBase / QExp / ICT 等 research 项目中回测验证过的量化策略,移植成 PythonGO 格式的 .py 文件,部署到 Windows 无限易客户端进行期货实盘交易. 每个策略对应一个独立的 .py 文件,搭配共享的 modules 模块层提供风控、执行、监控等基础设施.
+
+**当前部署 12 个生产策略** (3 大家族, 验证逐步推进):
+
+| 家族 | 数量 | 周期 | 信号风格 | 部署状态 |
+|------|------|------|---------|---------|
+| V8 (Donchian + ADX) | 3 (AL/CU/HC long) | 1H | forecast + Carver vol target | ✅ 半年+ 实盘 |
+| V13 (Donchian + MFI) | 4 (AG/JM/P/PP long) | 1H | 同 V8 | ✅ 半年+ 实盘 |
+| QExp robust | 4 (AG_Mom / AG_VSv2 / I_Pull / HC_S) | 5/15/30min | binary fires + ATR profit target | ⏸ 2026-04-28 上线 |
+| ICT v6 | 1 (I 铁矿 bidirectional) | 1m + D1 bias | state machine + R-ladder + chandelier | ⏸ 2026-04-28 上线 |
 
 ## 技术栈
 
@@ -17,62 +26,91 @@
 
 ```
 src/
-├── modules/              # 共享模块层（部署到 pyStrategy/modules/）
-│   ├── eal.py            # EAL执行算法层 — 大单拆批，M3子bar多因子评分执行
-│   ├── twap.py           # TWAP分批执行器 — bar开始后2-11分钟分批下单
-│   ├── risk.py           # 止损体系 — tick级硬止损 + M1级移动止损 (2026-04-17 重构)
-│   │                       + on_day_change 剔除过夜浮盈 (2026-04-20)
-│   ├── pricing.py        # ★ Spread-aware 限价定价 + urgency score (Phase 3)
-│   ├── rolling_vwap.py   # ★ 滚动 30min VWAP — Scaled entry 的"便宜"锚点 (Phase 4)
-│   ├── execution.py      # ★ ScaledEntryExecutor 状态机 — 分仓进场 (Phase 4)
-│   │                       + get_state/load_state/force_lock 崩溃恢复 (2026-04-20)
-│   ├── error_handler.py  # ★ throttle_on_error — 0004 撤单错误自动流控 (2026-04-20)
-│   ├── session_guard.py  # 交易时段守卫
-│   ├── contract_info.py  # 合约信息 — 乘数、最小变动价
-│   ├── feishu.py         # 飞书通知
-│   ├── persistence.py    # 状态持久化
-│   ├── trading_day.py    # 交易日检测 — 21:00切换
-│   ├── slippage.py       # 滑点记录
-│   ├── heartbeat.py      # 心跳监控
-│   ├── order_monitor.py  # 订单超时 + urgency escalator (Phase 3)
-│   ├── performance.py    # 绩效追踪
-│   ├── rollover.py       # 换月提醒
-│   └── position_sizing.py # 仓位计算 — Vol Targeting + Carver buffer
-├── AL/long/              # 电解铝做多策略 (V8 已集成完整修复 + startup eval + crash recovery)
-├── CU/short/             # 铜做空策略
-├── I/long/  I/short/     # 铁矿石做多+做空策略
-├── IH/long/              # 上证50做多策略
-├── LC/short/             # 碳酸锂做空策略
-├── DailyReporter.py      # 全账户每日汇总飞书推送
-└── test/                 # 集成测试策略
-    ├── TestFullModule.py     # 全模块协同测试（MA双均线, 已集成 executor）
-    ├── TestScaledEntry.py    # ★ ScaledEntryExecutor 三模式验证 (v2)
-    ├── TestAllFixes.py       # ★ 2026-04-20 全部 8 项修复的 smoke test (高频信号)
-    └── *_TEST.py             # 各品种/模块独立测试
-tests/                    # pytest 单元测试
-├── test_risk.py          # 27 用例: tick/M1 止损 + on_day_change 过夜浮盈
-├── test_pricing.py       # 31 用例: urgency + spread adaptation
-├── test_rolling_vwap.py  # 12 用例: 滚动窗口 + delta_vol
-├── test_order_monitor.py # 18 用例: escalation schedule
-├── test_execution.py     # 67 用例: 状态机 + 边界 + 记账 + crash recovery
-└── test_error_handler.py # 8 用例: 0004 流控 + 恢复 + 并发
+├── modules/                          # ★ 共享 modules 层 (部署到 pyStrategy/modules/)
+│   │                                   14 个 active modules + 4 个 legacy 留作 tests 引用
+│   ├── contract_info.py               88 品种规格 (乘数 / tick / sessions 含茶歇)
+│   ├── session_guard.py               交易时段 + open_grace_sec=30
+│   ├── pricing.py                     AggressivePricer 穿盘口 limit (替代 market=True)
+│   ├── order_monitor.py               订单超时 urgency escalator
+│   ├── slippage.py                    [滑点] N tick 记录
+│   ├── heartbeat.py                   每 tick UI 心跳
+│   ├── persistence.py                 state.json 跨日恢复
+│   ├── feishu.py                      飞书 webhook
+│   ├── error_handler.py               throttle_on_error (0004 流控)
+│   ├── trading_day.py                 21:00 trading day 边界
+│   ├── rollover.py                    换月提醒
+│   ├── performance.py                 R-multiple / 每日盈亏统计
+│   ├── risk.py                        tick 级硬止损 + M1 trail (V8/V13 用)
+│   ├── position_sizing.py             Carver vol target + buffer (V8/V13 用)
+│   ├── qexp_signals.py                ★ QExp 4 个信号 helper
+│   ├── eal.py / execution.py /        legacy (V8 已砍 ScaledEntryExecutor,
+│   │ rolling_vwap.py / twap.py        留作 tests/test_execution.py 等引用)
+│
+├── AL/long/                          # V8 生产 (Donchian + ADX, 1H, long)
+├── CU/long/                          # V8 生产
+├── HC/long/                          # V8 生产
+├── AG/long/                          # V13 生产 (Donchian + MFI, 1H, long)
+├── JM/long/                          # V13 生产
+├── P/long/                           # V13 生产
+├── PP/long/                          # V13 生产
+│
+├── qexp_robust/                      # ★ QExp 4 个 robust 策略 (2026-04-28 上线)
+│   ├── AG_Long_5M_MomentumContinuation.py
+│   ├── AG_Long_5M_VolSqueezeBreakout_v2.py
+│   ├── I_Long_15M_PullbackStrongTrend.py
+│   ├── HC_Short_30M_HighVolBreakdown.py
+│   └── README.md
+│
+├── ICT/                              # ★ ICT v6 (2022 Model state machine, 2026-04-28 上线)
+│   ├── modules/                       ICT 子包 (timezones / sessions_cn / structures /
+│   │                                            bias / state_machine)
+│   ├── I_Bidir_M1_ICT_v6.py           铁矿双向 1m 策略 Phase 1 reference
+│   └── README.md
+│
+├── DailyReporter.py                  # 全账户每日汇总飞书推送
+│
+├── test/                             # 4 个 active 集成测试策略
+│   ├── TestFullModule.py              全模块协同测试 (MA 双均线 + executor)
+│   ├── TestScaledEntry.py             ScaledEntryExecutor 三模式验证 (legacy 用)
+│   ├── TestAllFixes.py                2026-04-20 全部 8 项修复的 smoke test
+│   └── AL_Long_M1_Test_Oscillator.py  V2 标准模板测试 (M1 振子 12-bar 周期)
+│
+└── archive/                          # ★ 归档 — legacy 策略 (历史参考)
+    └── legacy_strategies/
+        ├── I/                         旧 I 品种 V7/V20/V26/V29/Portfolio
+        └── templates/                 旧 Template_Long/Short.py (V2 已替代)
+
+tests/                                # pytest 单元测试 (302 个 active)
+├── test_session_guard.py              SessionGuard 边界 / 茶歇 / open_grace
+├── test_risk.py                       tick/M1 止损 + on_day_change
+├── test_pricing.py                    urgency + spread adaptation
+├── test_order_monitor.py              escalation schedule
+├── test_error_handler.py              0004 流控 + 恢复 + 并发
+├── test_execution.py                  ★ legacy executor 测试 (引用 modules/execution.py)
+├── test_rolling_vwap.py               ★ legacy VWAP 测试 (引用 modules/rolling_vwap.py)
+├── test_pyramid_clamp.py              加仓 max_lots clamp
+├── test_lookahead_guard.py            前视检查
+├── test_qexp_signals.py               24 个 QExp 信号 + 4 strategy syntax
+├── test_daily_report.py               37 个 daily_report 工具测试
+└── test_ict.py                        37 个 ICT 单元 + bug-fix regression
+
 docs/
-├── ARCHITECTURE.md       # 架构与开发规范
-├── MODULE_REFERENCE.md   # 模块参考手册
-├── OPERATIONAL_ISSUES_RESEARCH.md
-├── RESEARCH_REPORT.md
-├── SESSION_2026_04_17.md # 2026-04-17 session 记录
-├── SESSION_2026_04_20.md # ★ 2026-04-20 fleet-wide 修复记录
-└── pythongo/             # ★ PythonGO V2 API 完整源码审计 (8 md, 3135 行)
-    ├── README.md         # 索引 + findings + bug list (已全部标 FIXED)
-    ├── base.md           # BaseStrategy + INFINIGO 附录
-    ├── classdef.md       # 10 个数据类字段表
-    ├── utils.md          # KLineGenerator / Scheduler / Indicators / MarketCenter
-    ├── ui.md             # widget + drawer + crosshair
-    ├── options.md        # Option 定价 + 希腊值 + OptionChain
-    ├── backtesting.md    # 回测引擎 (不建议用, 用 QBase)
-    └── types.md          # 所有 Type 别名 + 数值映射
-pythongo/                 # ★ PythonGO V2 源码 (供对照, .pyd 已 gitignore)
+├── ARCHITECTURE.md                   # ★ 核心 — 架构与开发规范
+├── MODULE_REFERENCE.md               # ★ 核心 — 模块 API 手册
+├── STRATEGY_STANDARD_V2.md           # ★ 核心 — 策略模版 V2 标准 (2026-04-24)
+├── TAKEOVER.md                       # ★ 核心 — 启动接管模式
+├── pythongo/                         # ★ PythonGO V2 源码审计 (8 md, 3135 行)
+└── archive/                          # ★ 归档 — 历史 session 快照
+    ├── SESSION_2026_04_17.md
+    ├── SESSION_2026_04_20.md
+    ├── OPERATIONAL_ISSUES_RESEARCH.md
+    └── RESEARCH_REPORT.md
+
+tools/daily_report/                   # ★ 每日实盘日报 (HTML + PDF, alias 路由识别)
+
+reports/                              # 每日 data + HTML/PDF 报告
+
+pythongo/                             # PythonGO V2 SDK 源码 (.pyd gitignore)
 ```
 
 ## 部署
@@ -277,18 +315,23 @@ from modules.error_handler import throttle_on_error
 
 | 文件 | 用途 |
 |------|------|
-| `docs/ARCHITECTURE.md` | 模板规范、API踩坑 |
-| `docs/MODULE_REFERENCE.md` | 模块API参考 + 部署说明 |
-| `docs/SESSION_2026_04_20.md` | ★ 本轮 session 完整记录 |
+| `docs/ARCHITECTURE.md` | 核心 — 架构规范 + API 踩坑总结 |
+| `docs/MODULE_REFERENCE.md` | 核心 — 模块 API 手册 + 部署说明 |
+| `docs/STRATEGY_STANDARD_V2.md` | ★ 核心 — 策略模版 V2 标准 (2026-04-24) |
+| `docs/TAKEOVER.md` | ★ 核心 — 启动接管模式 (跨日生命周期) |
 | `docs/pythongo/` | ★ PythonGO V2 源码审计 (8 md, 3135 行) |
-| `src/modules/risk.py` | 止损 tick/M1 + on_day_change 过夜浮盈修正 |
-| `src/modules/pricing.py` | ★ Spread-aware 限价定价 + urgency (Phase 3) |
-| `src/modules/rolling_vwap.py` | ★ 滚动 30min VWAP (Phase 4) |
-| `src/modules/execution.py` | ★ ScaledEntryExecutor 入场状态机 + crash recovery |
-| `src/modules/error_handler.py` | ★ throttle_on_error 0004 流控 (2026-04-20) |
-| `src/modules/eal.py` | EAL执行算法层 (legacy) |
-| `src/modules/twap.py` | TWAP分批执行 (legacy) |
-| `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` | ★ 主实盘策略, 完整集成所有修复 |
+| `docs/archive/` | 归档 — 历史 session / research 快照 |
+| `src/modules/contract_info.py` | 88 品种规格 (含茶歇 sessions) |
+| `src/modules/session_guard.py` | 时段守卫 + open_grace_sec=30 |
+| `src/modules/pricing.py` | AggressivePricer 穿盘口 limit |
+| `src/modules/risk.py` | tick 级硬止损 + M1 trail + on_day_change |
+| `src/modules/error_handler.py` | throttle_on_error 0004 流控 |
+| `src/modules/qexp_signals.py` | ★ QExp 4 个信号 helper |
+| `src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py` | V8 reference (Donchian + ADX) |
+| `src/AG/long/AG_Long_1H_V13_Donchian_MFI.py` | V13 reference (Donchian + MFI) |
+| `src/qexp_robust/` | ★ QExp 4 robust 策略 + README |
+| `src/ICT/` | ★ ICT v6 (含子 modules) + I_Bidir_M1_ICT_v6.py + README |
+| `tools/daily_report/` | 每日实盘日报 (HTML + PDF, alias 路由) |
 | `src/test/TestFullModule.py` | 全模块集成测试模板 |
 | `src/test/TestScaledEntry.py` | ★ ScaledEntryExecutor 三模式验证 |
 | `src/test/TestAllFixes.py` | ★ 2026-04-20 修复 smoke test (高频信号) |
@@ -338,6 +381,44 @@ from modules.error_handler import throttle_on_error
 | GFEX 无夜盘 | 4 | `252 × 4` |
 
 ## 迭代历史
+
+### 2026-04-28 — QExp + ICT 上线 + 项目结构清理
+
+**12 个生产策略部署完成** (3 大家族):
+- V8 (Donchian+ADX): AL/CU/HC long
+- V13 (Donchian+MFI): AG/JM/P/PP long
+- QExp robust (4 个 audit 通过): AG_Mom (5min) / AG_VSv2 (5min) / I_Pull (15min) / HC_S (30min)
+- ICT v6 (2022 Model state machine): I 铁矿 1m + D1 bias bidirectional Phase 1
+
+**takeover_lots 模式全推广** (V8/V13 7 个策略 + QExp/ICT 全适配): 4 处 patch
+(Params 字段 + __init__ flag + on_start override + 首 tick 兜底).
+解决 18:00 强制清算 → 21:00 重启时承接下午仓位的痛点.
+
+**daily_report 工具** (tools/daily_report/): 每日实盘 HTML + PDF 报告.
+strategy_aliases.json 路由识别 11 个生产策略, 同时支持 V8/V13 forecast
+风格 + QExp binary fires 风格 (PivotSpec 加 profit_target_formula 字段).
+滑点直接用 log [滑点] N.N ticks (策略 SlippageTracker 算的真滑点),
+flip 符号让正=有利与金额方向一致.
+
+**ICT v6 移植** (Phase 1): 自审 + code-reviewer 审, 修了 8 个 critical
+bugs (limit 单时机 / push_history double append / confirm_open 拆批 /
+on_trade _own_pos 拆批不累加 / dead code / datetime 类型不确定 /
+history 充足检查 / _sm None guard).
+
+**Field title 不能含特殊字符** 踩坑: Field(title="...") 含逗号/等号/
+大于号/括号会让 pythongo/base.py:84 __package_params 抛 KeyError.
+约定: title 必须简洁中文, 详细说明只放代码注释.
+
+**项目结构清理**:
+- 删 9 个零引用文件 (modules/daily_reporter.py / test/TestBarebone.py /
+  CU_Short_*_TEST × 5 / I_Short_*_TEST × 2)
+- 归档到 src/archive/legacy_strategies/: 旧 I 品种 6 个策略 + Template_Long/Short
+- 归档到 docs/archive/: SESSION_2026_04_17/04_20 + OPERATIONAL/RESEARCH
+- legacy modules (eal/execution/rolling_vwap/twap) 留在 modules/ 不动
+  (被 tests/test_execution.py 等引用, 删了会破 tests)
+- legacy V8/V15/V20/V7/Portfolio/CU short/IH/LC short Simon 已 git rm
+
+测试: 302 pytest 全绿.
 
 ### 2026-04-24 — 新标准模版确立 (V2) + 7 品种部署
 

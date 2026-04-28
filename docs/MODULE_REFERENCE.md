@@ -1,16 +1,21 @@
 # PythonGO Engine — 模块参考手册
 
-> **2026-04-20 更新**:
-> - 新增 `modules/error_handler.py`(0004 流控)
-> - 更新至 PythonGO 2025.0925.1420 源码对齐
-> - `contract_info.py` 70 个非 CFFEX 商品品种早盘拆分 10:15-10:30 茶歇
-> - `SessionGuard` 新增 `open_grace_sec=30` 开盘保护 + `seconds_since_session_start()` helper
-> - `risk.py` 的 `on_day_change(balance, position_profit=0.0)` 剔除过夜浮盈
-> - `execution.py` (ScaledEntryExecutor) 新增 `get_state/load_state/force_lock` 崩溃恢复
+> **2026-04-28 更新** — 当前生产标准请见 [`STRATEGY_STANDARD_V2.md`](STRATEGY_STANDARD_V2.md):
+> 现行 V8/V13 / QExp / ICT 策略**已砍掉** ScaledEntryExecutor 复杂状态机,
+> 改用 `send_order` + `AggressivePricer` 穿盘口直接执行.
 >
-> 详见 `docs/SESSION_2026_04_20.md` + `docs/pythongo/` 8 md 完整 API 对照。
+> 本文档中:
+> - **Active modules** (14 个): contract_info / session_guard / pricing /
+>   order_monitor / slippage / heartbeat / persistence / feishu / error_handler /
+>   trading_day / rollover / performance / risk / position_sizing / qexp_signals
+> - **Legacy modules** (4 个, 留在 modules/ 给 tests 引用): eal / execution /
+>   rolling_vwap / twap — Phase 3/4 时代的 ScaledEntryExecutor 框架
+>
+> 历史 session 记录归档在 [`docs/archive/`](archive/).
+>
+> 详见 `docs/pythongo/` 8 md PythonGO V2 SDK 完整源码审计 (3135 行).
 
-所有模块已在无限易模拟盘测试通过 (2026-04-02,2026-04-20 全队修复后 pytest **200/200 绿**,2 轮实盘 smoke test 确认)。
+所有模块已在无限易实盘验证 (302 pytest 全绿, 12 个生产策略部署: 7 V8/V13 + 4 QExp + 1 ICT).
 
 ## 部署位置
 
@@ -49,23 +54,36 @@ from modules.error_handler import throttle_on_error
 
 ## 模块清单
 
+### Active (14 个 — 现行 V8/V13/QExp/ICT 全部使用)
+
 | 模块 | 文件 | 类型 | 说明 |
 |------|------|------|------|
-| 飞书通知 | `modules/feishu.py` | 函数 | `feishu(action, symbol, msg)` 非阻塞 |
+| 合约规格 | `modules/contract_info.py` | 函数 | 88 品种乘数/tick/sessions (含早盘 10:15-10:30 茶歇) |
+| 时段守卫 | `modules/session_guard.py` | 类 | `SessionGuard(open_grace_sec=30)` 开盘保护 |
+| 飞书通知 | `modules/feishu.py` | 函数 | `feishu(action, symbol, msg)` 非阻塞 webhook |
 | 状态持久化 | `modules/persistence.py` | 函数 | `save_state(data)` / `load_state()` |
-| 交易日检测 | `modules/trading_day.py` | 函数 | `get_trading_day()` → "20260402" |
-| 止损体系 | `modules/risk.py` | 类 | `RiskManager` — tick/M1 级止损 (2026-04-17 重构) |
-| 滑点记录 | `modules/slippage.py` | 类 | `SlippageTracker` |
-| 心跳监控 | `modules/heartbeat.py` | 类 | `HeartbeatMonitor` |
-| 订单超时 | `modules/order_monitor.py` | 类 | `OrderMonitor` + escalator (Phase 3) |
-| 绩效追踪 | `modules/performance.py` | 类 | `PerformanceTracker` |
+| 交易日检测 | `modules/trading_day.py` | 函数 | `get_trading_day()` → "20260402" (21:00 切换) |
+| 止损体系 | `modules/risk.py` | 类 | `RiskManager` — tick 级硬止损 + M1 trail + on_day_change |
+| 滑点记录 | `modules/slippage.py` | 类 | `SlippageTracker` 每笔 [滑点] N tick |
+| 心跳监控 | `modules/heartbeat.py` | 类 | `HeartbeatMonitor` 每 tick UI 心跳 |
+| 订单超时 | `modules/order_monitor.py` | 类 | `OrderMonitor` urgency escalator |
+| 绩效追踪 | `modules/performance.py` | 类 | `PerformanceTracker` R-multiple / 当日盈亏 |
 | 换月提醒 | `modules/rollover.py` | 函数 | `check_rollover(id)` → (level, days) |
-| 仓位计算 | `modules/position_sizing.py` | 函数 | `calc_optimal_lots()` / `apply_buffer()` |
-| **Aggressive Pricer** | `modules/pricing.py` | 类 | `AggressivePricer` — 盘口追 bid/ask + urgency (Phase 3) |
-| **Rolling VWAP** | `modules/rolling_vwap.py` | 类 | `RollingVWAP` — 滚动 30min VWAP (Phase 4) |
-| **Scaled Entry** | `modules/execution.py` | 类 | `ScaledEntryExecutor` — 分仓进场状态机 (Phase 4) |
+| 仓位计算 | `modules/position_sizing.py` | 函数 | `calc_optimal_lots()` / `apply_buffer()` (V8/V13 Carver) |
+| 错误流控 | `modules/error_handler.py` | 函数 | `throttle_on_error` 0004 自动流控 |
+| **Aggressive Pricer** | `modules/pricing.py` | 类 | `AggressivePricer` 穿盘口 limit + urgency (替代 market=True) |
+| **QExp Signals** | `modules/qexp_signals.py` | 类×4 | MomentumContinuation / VolSqueezeBreakoutLongV2 / PullbackStrongTrend / HighVolBreakdownShort |
 
-### Phase 3: Aggressive Pricing (2026-04-17)
+### Legacy (4 个 — 保留供 tests 引用, 现行策略不再使用)
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| EAL | `modules/eal.py` | EAL 执行算法层, M3 子 bar 分批 (V8 已砍) |
+| Scaled Entry | `modules/execution.py` | `ScaledEntryExecutor` 分仓进场状态机 (V8 已砍) |
+| Rolling VWAP | `modules/rolling_vwap.py` | 30min 滚动 VWAP (V8 已砍) |
+| TWAP | `modules/twap.py` | TWAP 分批执行 (V8 已砍) |
+
+### Phase 3: Aggressive Pricing (现行 — V8/V13/QExp/ICT 全部使用)
 
 ```python
 from modules.pricing import AggressivePricer
@@ -82,7 +100,7 @@ px = pricer.price("buy", urgency="urgent")    # ask1 + 5 tick
 px = pricer.price_with_urgency_score("buy", urgency=0.75, max_ticks=10)  # 穿 ~8 tick
 ```
 
-### Phase 4: Scaled Entry (2026-04-17)
+### Phase 4: Scaled Entry (LEGACY — V8 已砍, 仅供历史参考 + tests 引用)
 
 ```python
 from modules.execution import EntryParams, ScaledEntryExecutor

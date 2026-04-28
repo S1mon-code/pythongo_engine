@@ -177,10 +177,13 @@ if self._tick_count % 10 == 0:
 
 ```
 src/
-  ├── {品种大写}/{方向}/*.py       # 生产策略
-  │      例: AL/long/ CU/short/ AG/long/
+  ├── {品种大写}/{方向}/*.py       # V8/V13 生产策略
+  │      例: AL/long/ HC/long/ AG/long/ JM/long/
+  ├── qexp_robust/*.py            # QExp robust 策略 (单文件夹)
+  ├── ICT/*.py + ICT/modules/     # ICT v6 (含子 modules)
   ├── test/*.py                   # 测试/smoke 策略
-  └── modules/*.py                # 共享模块
+  ├── modules/*.py                # 共享模块
+  └── archive/legacy_strategies/  # 归档 — 旧策略历史参考
 ```
 
 ### 2.3 STRATEGY_NAME 唯一
