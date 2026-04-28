@@ -396,6 +396,101 @@ def test_pair_trades_slippage_split_fills_share_ticks():
 _REPO = Path(__file__).resolve().parents[1]
 
 
+# ---------------------------------------------------------------------------
+# pivot_extractor — alias 路由 + family 识别
+# ---------------------------------------------------------------------------
+
+
+def test_pivot_extract_v8_alias():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("AL")
+    assert p is not None
+    assert p.family == "V8"
+    assert p.bias == "long"
+    assert p.symbol == "AL"
+    assert p.trail_stop_formula  # V8 有 trail
+    assert not p.profit_target_formula
+    assert p.trailing_pct > 0
+
+
+def test_pivot_extract_v13_alias():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("AG")
+    assert p is not None
+    assert p.family == "V13"
+    assert p.symbol == "AG"
+    assert p.trail_stop_formula
+
+
+def test_pivot_extract_qexp_momentum():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("AG_Mom")
+    assert p is not None
+    assert p.family == "QExp_Mom"
+    assert p.bias == "long"
+    assert p.symbol == "AG"
+    assert p.profit_target_atr_mult == pytest.approx(2.0)
+    assert p.hard_stop_pct == pytest.approx(2.0)
+    assert p.trailing_pct == 0
+    assert not p.trail_stop_formula
+    assert p.profit_target_formula
+    # 入场公式应含 body / ATR / cooldown
+    assert "body" in p.entry_formula.lower() or "atr" in p.entry_formula.lower()
+
+
+def test_pivot_extract_qexp_volsqueeze():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("AG_VSv2")
+    assert p.family == "QExp_VSv2"
+    assert p.bias == "long"
+    assert "squeeze" in p.entry_formula.lower() or "z_60" in p.entry_formula.lower()
+
+
+def test_pivot_extract_qexp_pullback():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("I_Pull")
+    assert p.family == "QExp_Pull"
+    assert p.bias == "long"
+    assert p.symbol == "I"
+
+
+def test_pivot_extract_qexp_hvb_short():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("HC_S")
+    assert p.family == "QExp_HVB"
+    assert p.bias == "short"
+    assert p.symbol == "HC"
+    # short 出场 pivot 描述应包含"买平"
+    assert any("买平" in e for e in p.exit_pivots)
+
+
+def test_pivot_extract_unknown_alias_returns_none():
+    from tools.daily_report.pivot_extractor import extract_pivot
+    p = extract_pivot("NOT_A_REAL_ALIAS_XYZ")
+    assert p is None
+
+
+def test_pivot_extract_legacy_symbol_fallback():
+    """alias 不在 json 里 → fallback 按 symbol 找 V8/V13."""
+    from tools.daily_report.pivot_extractor import extract_pivot
+    # JM 在 json 里, 直接走 alias path. 这里测 _legacy_symbol_lookup 直接调用.
+    from tools.daily_report.pivot_extractor import _legacy_symbol_lookup
+    p = _legacy_symbol_lookup("JM")
+    assert p is not None
+    assert p.family == "V13"
+
+
+def test_aliases_json_loads_all_11():
+    """strategy_aliases.json 应有 7 V8/V13 + 4 QExp = 11 个 alias."""
+    from tools.daily_report.pivot_extractor import _load_aliases
+    aliases = _load_aliases()
+    expected = {"AL", "CU", "HC", "AG", "JM", "P", "PP",
+                "AG_Mom", "AG_VSv2", "I_Pull", "HC_S"}
+    assert expected.issubset(aliases.keys())
+    # 不应包含 _doc 这类下划线 key
+    assert not any(k.startswith("_") for k in aliases)
+
+
 def _find_real_log() -> Path | None:
     """优先 reports/4-27/, 回退到 logs/."""
     for cand in [

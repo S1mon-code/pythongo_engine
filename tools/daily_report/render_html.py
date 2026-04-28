@@ -273,10 +273,23 @@ def _render_pivot_box(spec: PivotSpec) -> str:
     conds = "".join(f"<li>{_h(c)}</li>" for c in spec.entry_conditions)
     exits = "".join(f"<li>{_h(p)}</li>" for p in spec.exit_pivots)
     consts_str = ", ".join(f"{k}={v}" for k, v in spec.constants.items())
+
+    # V8/V13 显示 trail_stop_formula; QExp 显示 profit_target_formula
+    if spec.trail_stop_formula:
+        exit_label = "移动止损线生成方式"
+        exit_body = spec.trail_stop_formula
+        meta_extra = f"硬止损 {spec.hard_stop_pct}%　|　移动止损 {spec.trailing_pct}%"
+    else:
+        exit_label = f"ATR 止盈线生成方式 (止盈 ATR×{spec.profit_target_atr_mult:g})"
+        exit_body = spec.profit_target_formula
+        meta_extra = (f"硬止损 {spec.hard_stop_pct}%　|　止盈 {spec.profit_target_atr_mult:g}×ATR"
+                      f"　|　方向 {spec.bias}")
+
+    bias_label = "做多" if spec.bias == "long" else "做空"
     return f"""
 <div class="pivot-box">
-  <div><b>{_h(spec.strategy_name)}</b> <span class="muted">({spec.family} 信号家族)</span></div>
-  <div class="strategy-meta">参数:{_h(consts_str)}　|　硬止损 {spec.hard_stop_pct}%　|　移动止损 {spec.trailing_pct}%</div>
+  <div><b>{_h(spec.strategy_name)}</b> <span class="muted">({spec.family} {bias_label}信号家族)</span></div>
+  <div class="strategy-meta">参数:{_h(consts_str)}　|　{_h(meta_extra)}</div>
 
   <div class="label">入场信号公式</div>
   <div class="formula">{_h(spec.entry_formula)}</div>
@@ -287,8 +300,8 @@ def _render_pivot_box(spec: PivotSpec) -> str:
   <div class="label">出场触发(任一即平仓)</div>
   <ul class="conds">{exits}</ul>
 
-  <div class="label">移动止损线生成方式</div>
-  <div class="formula">{_h(spec.trail_stop_formula)}</div>
+  <div class="label">{_h(exit_label)}</div>
+  <div class="formula">{_h(exit_body)}</div>
 </div>
 """
 
@@ -339,14 +352,18 @@ def _render_exit_table(trips: list[RoundTrip]) -> str:
         ts_obj = x.trail_stop or {}
         ex = x.execute or {}
         d = x.decision or {}
+        action = (ex.get("action") or "").upper()
         if ts_obj:
             trigger = "移动止损"
-            detail = (f"当前价 {ts_obj.get('close')} ≤ 移损线 {ts_obj.get('line')}")
-        elif ex.get("action") == "TRAIL_STOP":
+            detail = f"当前价 {ts_obj.get('close')} ≤ 移损线 {ts_obj.get('line')}"
+        elif action == "TRAIL_STOP":
             trigger = "移动止损"
             detail = ex.get("reason", "")
-        elif ex.get("action") == "HARD_STOP":
+        elif action == "HARD_STOP":
             trigger = "硬止损"
+            detail = ex.get("reason", "")
+        elif action == "PROFIT_TARGET":
+            trigger = "ATR 止盈"
             detail = ex.get("reason", "")
         elif d.get("target") == 0 and (d.get("optimal") or 0) <= 0:
             trigger = "信号反转"

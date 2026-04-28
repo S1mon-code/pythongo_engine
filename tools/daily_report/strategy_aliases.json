@@ -1,0 +1,16 @@
+{
+  "_doc": "策略 alias (无限易客户端起的简短名字) → 源文件路径. 日报靠 alias 识别策略, 找到对应 pivot 公式. 修改后无需重启任何东西, 下次跑报告生效.",
+
+  "AL":      "src/AL/long/AL_Long_1H_V8_Donchian_ADX_Filter.py",
+  "CU":      "src/CU/long/CU_Long_1H_V8_Donchian_ADX_Filter.py",
+  "HC":      "src/HC/long/HC_Long_1H_V8_Donchian_ADX_Filter.py",
+  "AG":      "src/AG/long/AG_Long_1H_V13_Donchian_MFI.py",
+  "JM":      "src/JM/long/JM_Long_1H_V13_Donchian_MFI.py",
+  "P":       "src/P/long/P_Long_1H_V13_Donchian_MFI.py",
+  "PP":      "src/PP/long/PP_Long_1H_V13_Donchian_MFI.py",
+
+  "AG_Mom":  "src/qexp_robust/AG_Long_5M_MomentumContinuation.py",
+  "AG_VSv2": "src/qexp_robust/AG_Long_5M_VolSqueezeBreakout_v2.py",
+  "I_Pull":  "src/qexp_robust/I_Long_15M_PullbackStrongTrend.py",
+  "HC_S":    "src/qexp_robust/HC_Short_30M_HighVolBreakdown.py"
+}
