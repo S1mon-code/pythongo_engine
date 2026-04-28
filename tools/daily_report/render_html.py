@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from .csv_parser import CsvTrade
 from .pivot_extractor import PivotSpec
 from .specs import ContractSpec, get_spec
 from .trade_pairing import RoundTrip, TradeLeg
@@ -32,20 +33,30 @@ class Summary:
     total_round_trips: int
     closed_count: int
     open_count: int
+    takeover_count: int          # 隔夜接管的孤儿平仓数
+    cancelled_count: int          # 撤单数
     symbols: list[str]
-    gross_pnl: float
+    gross_pnl: float              # 当日策略层毛盈亏 (剔除 takeover)
     slippage_pnl: float
-    net_pnl: float
-    avg_slip_ticks: float    # 全部 round-trip 平均合计跳数 (每笔)
-    avg_leg_ticks: float     # 全部 leg 平均跳数 (每腿)
+    net_pnl: float                # broker_pnl - fee (有 broker 时) / 否则 gross + slip
+    avg_slip_ticks: float
+    avg_leg_ticks: float
+    # broker 真值字段 (CSV 流程才有)
+    broker_pnl_total: float       # broker 平仓盈亏合计 (含隔夜价差)
+    per_trade_pnl_total: float    # 逐笔盈亏合计 (按本笔开仓价)
+    fee_total: float              # 手续费合计
+    has_broker_data: bool         # 标记是否有 broker 真值数据
 
 
 def _aggregate(trips: list[RoundTrip], target_date: date,
-               win_start: datetime, win_end: datetime) -> Summary:
+               win_start: datetime, win_end: datetime,
+               cancelled_count: int = 0) -> Summary:
     gross = slip = 0.0
+    broker_total = per_total = fee_total = 0.0
     symbols: set[str] = set()
-    closed = open_n = 0
-    total_ticks_sum = 0.0      # |合计跳数| 累加 (绝对值 — 用于"平均偏离"指标)
+    closed = open_n = takeover_n = 0
+    has_broker = False
+    total_ticks_sum = 0.0
     total_legs = 0
     for rt in trips:
         symbols.add(rt.symbol_root)
@@ -53,7 +64,23 @@ def _aggregate(trips: list[RoundTrip], target_date: date,
         leg_pnl = rt.slippage_pnl(spec)
         total_ticks_sum += abs(rt.total_slip_ticks())
         total_legs += 1 if rt.is_open else 2
-        if rt.is_open:
+
+        # 累计 broker 真值字段 (CSV 流程)
+        if rt.entry.fee:
+            fee_total += rt.entry.fee
+        if rt.exit and rt.exit.fee:
+            fee_total += rt.exit.fee
+        if rt.exit and rt.exit.broker_pnl is not None:
+            broker_total += rt.exit.broker_pnl
+            has_broker = True
+        if rt.exit and rt.exit.per_trade_pnl is not None:
+            per_total += rt.exit.per_trade_pnl
+
+        if rt.is_takeover:
+            takeover_n += 1
+            closed += 1   # takeover 也算已平仓
+            slip += leg_pnl
+        elif rt.is_open:
             open_n += 1
             slip += leg_pnl
         else:
@@ -63,16 +90,24 @@ def _aggregate(trips: list[RoundTrip], target_date: date,
     n = len(trips)
     avg_per_trip = total_ticks_sum / n if n else 0.0
     avg_per_leg = total_ticks_sum / total_legs if total_legs else 0.0
+    # 净盈亏: 有 broker 数据时用 broker 真值 - 手续费; 否则用 gross + slip
+    net = (broker_total - fee_total) if has_broker else (gross + slip)
     return Summary(
         target_date=target_date,
         window_start=win_start, window_end=win_end,
         total_round_trips=len(trips),
         closed_count=closed, open_count=open_n,
+        takeover_count=takeover_n,
+        cancelled_count=cancelled_count,
         symbols=sorted(symbols),
         gross_pnl=gross, slippage_pnl=slip,
-        net_pnl=gross + slip,
+        net_pnl=net,
         avg_slip_ticks=avg_per_trip,
         avg_leg_ticks=avg_per_leg,
+        broker_pnl_total=broker_total,
+        per_trade_pnl_total=per_total,
+        fee_total=fee_total,
+        has_broker_data=has_broker,
     )
 
 
@@ -135,6 +170,9 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 .footer { color: #999; font-size: 11px; text-align: left; margin-top: 32px;
           padding-top: 12px; border-top: 1px solid #e0e0e0; }
 .strategy-meta { color: #555; font-size: 11.5px; margin-top: 2px; }
+.takeover-tag { display: inline-block; padding: 1px 6px; border-radius: 3px;
+                font-size: 10.5px; background: #fff4e6; color: #b35900;
+                border: 1px solid #ffd99e; }
 @media print {
   body { padding: 16px; }
   .section { page-break-inside: avoid; }
@@ -195,27 +233,57 @@ def _h(s: str) -> str:
 
 
 def _render_summary(s: Summary) -> str:
+    if s.has_broker_data:
+        # broker 真值版 (CSV 流程)
+        net_label = "净盈亏 (broker − 手续费)"
+        net_val = s.net_pnl
+        col2_label = "broker 平仓盈亏"
+        col2_val = s.broker_pnl_total
+        col3_label = "逐笔盈亏 (本笔成本)"
+        col3_val = s.per_trade_pnl_total
+        col4_label = "手续费"
+        col4_val_str = f"¥{s.fee_total:,.2f}"
+        col4_class = ""
+    else:
+        # 旧 log 流程
+        net_label = "净盈亏"
+        net_val = s.net_pnl
+        col2_label = "毛盈亏"
+        col2_val = s.gross_pnl
+        col3_label = "滑点损益"
+        col3_val = s.slippage_pnl
+        col4_label = "平均滑点"
+        col4_val_str = f"{s.avg_slip_ticks:.1f} 跳/笔"
+        col4_class = ""
+
+    closed_open = (
+        f"{s.closed_count} / {s.open_count}"
+        + (f"<span class='muted'> (含接管 {s.takeover_count})</span>"
+           if s.takeover_count else "")
+        + (f"<span class='muted'> · 撤单 {s.cancelled_count}</span>"
+           if s.cancelled_count else "")
+    )
     return f"""
 <div class="cards">
   <div class="card">
-    <div class="label">净盈亏</div>
-    <div class="value {_money_class(s.net_pnl)}">{_money_signed(s.net_pnl)}</div>
+    <div class="label">{net_label}</div>
+    <div class="value {_money_class(net_val)}">{_money_signed(net_val)}</div>
   </div>
   <div class="card">
-    <div class="label">毛盈亏</div>
-    <div class="value {_money_class(s.gross_pnl)}">{_money_signed(s.gross_pnl)}</div>
+    <div class="label">{col2_label}</div>
+    <div class="value {_money_class(col2_val)}">{_money_signed(col2_val)}</div>
   </div>
   <div class="card">
-    <div class="label">滑点损益</div>
-    <div class="value {_money_class(s.slippage_pnl)}">{_money_signed(s.slippage_pnl)}</div>
+    <div class="label">{col3_label}</div>
+    <div class="value {_money_class(col3_val)}">{_money_signed(col3_val)}</div>
   </div>
   <div class="card">
-    <div class="label">平均滑点</div>
-    <div class="value">{s.avg_slip_ticks:.1f} 跳/笔</div>
+    <div class="label">{col4_label}</div>
+    <div class="value {col4_class}">{col4_val_str}</div>
   </div>
   <div class="card">
     <div class="label">已平仓 / 持有中</div>
-    <div class="value">{s.closed_count} / {s.open_count}</div>
+    <div class="value">{closed_open}</div>
   </div>
   <div class="card">
     <div class="label">交易品种</div>
@@ -229,7 +297,7 @@ def _trade_status(rt: RoundTrip) -> str:
     return "持有中" if rt.is_open else "已平仓"
 
 
-def _render_master_table(trips: list[RoundTrip]) -> str:
+def _render_master_table(trips: list[RoundTrip], has_broker: bool) -> str:
     if not trips:
         return '<p class="muted">本日无交易。</p>'
     rows = []
@@ -240,29 +308,102 @@ def _render_master_table(trips: list[RoundTrip]) -> str:
         x = rt.exit
         gross = rt.gross_pnl if not rt.is_open else 0.0
         slip = rt.slippage_pnl(spec)
-        net = gross + slip
         side_tag = "多" if rt.direction == "long" else "空"
+
+        # 状态标记
+        if rt.is_takeover:
+            status_html = '<span class="takeover-tag">隔夜接管</span>'
+        elif rt.is_open:
+            status_html = '持有中'
+        else:
+            status_html = '已平仓'
+
+        # 入场价: takeover 显示 "—" (没有真开仓价)
+        entry_px = '<span class="dim">—</span>' if rt.is_takeover else _fmt_price(e.fill_price)
+        exit_px = _fmt_price(x.fill_price) if x else '<span class="dim">—</span>'
+
+        # broker pnl + 逐笔 + fee
+        if has_broker:
+            broker_pnl = (x.broker_pnl if x and x.broker_pnl is not None else None)
+            per_pnl = (x.per_trade_pnl if x and x.per_trade_pnl is not None else None)
+            fee = (e.fee or 0.0) + ((x.fee if x else 0.0) or 0.0)
+            broker_html = (f'<td class="num {_money_class(broker_pnl)}">{_money_signed(broker_pnl)}</td>'
+                           if broker_pnl is not None else '<td class="num dim">—</td>')
+            per_html = (f'<td class="num {_money_class(per_pnl)}">{_money_signed(per_pnl)}</td>'
+                        if per_pnl is not None else '<td class="num dim">—</td>')
+            fee_html = (f'<td class="num">¥{fee:.2f}</td>' if fee else '<td class="num dim">—</td>')
+            net = (broker_pnl or 0.0) - fee if broker_pnl is not None else (gross + slip)
+            net_html = f'<td class="num {_money_class(net)}"><b>{_money_signed(net)}</b></td>'
+        else:
+            net = gross + slip
+            gross_disp = _money_signed(gross) if not rt.is_open else '<span class="dim">—</span>'
+            broker_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
+            per_html = f'<td class="num {_money_class(slip)}">{_h(_slip_with_ticks(rt, spec))}</td>'
+            fee_html = ''
+            net_html = f'<td class="num {_money_class(net)}"><b>{_money_signed(net)}</b></td>'
+
         rows.append(f"""
 <tr>
   <td>{_h(e.ts.strftime('%m-%d %H:%M:%S'))}</td>
   <td><b>{_h(rt.symbol_root)}</b></td>
   <td>{side_tag}</td>
   <td class="num">{rt.lots}</td>
-  <td class="num">{_fmt_price(e.fill_price)}</td>
-  <td class="num">{_fmt_price(x.fill_price) if x else '<span class="dim">—</span>'}</td>
-  <td class="num {_money_class(gross)}">{_money_signed(gross) if not rt.is_open else '<span class="dim">—</span>'}</td>
-  <td class="num {_money_class(slip)}">{_h(_slip_with_ticks(rt, spec))}</td>
-  <td class="num {_money_class(net)}"><b>{_money_signed(net)}</b></td>
-  <td>{_trade_status(rt)}</td>
+  <td class="num">{entry_px}</td>
+  <td class="num">{exit_px}</td>
+  {broker_html}
+  {per_html}
+  {fee_html}
+  {net_html}
+  <td>{status_html}</td>
+</tr>
+""")
+    if has_broker:
+        header = """
+<tr>
+  <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
+  <th class="num">入场价</th><th class="num">出场价</th>
+  <th class="num">broker盈亏</th><th class="num">逐笔盈亏</th>
+  <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
+</tr>"""
+    else:
+        header = """
+<tr>
+  <th>开仓时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
+  <th class="num">入场价</th><th class="num">出场价</th>
+  <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+  <th class="num">净盈亏</th><th>状态</th>
+</tr>"""
+    return f"""
+<table>
+  <thead>{header}</thead>
+  <tbody>{''.join(rows)}</tbody>
+</table>
+"""
+
+
+def _render_cancelled_table(cancelled: list[CsvTrade]) -> str:
+    if not cancelled:
+        return ""
+    rows = []
+    for c in sorted(cancelled, key=lambda t: t.send_ts):
+        rows.append(f"""
+<tr>
+  <td>{_h(c.send_ts.strftime('%m-%d %H:%M:%S'))}</td>
+  <td><b>{_h(c.symbol_root)}</b></td>
+  <td>{_h('买' if c.side == 'buy' else '卖')}</td>
+  <td>{_h(c.offset_cn)}</td>
+  <td class="num">{_fmt_price(c.send_price) if c.send_price else '—'}</td>
+  <td class="num">{c.send_lots}</td>
+  <td class="muted">{_h(c.status)}</td>
 </tr>
 """)
     return f"""
+<h2>当日撤单 ({len(cancelled)} 笔)</h2>
+<p class="muted">通常由 OrderMonitor escalator 触发: 挂单超时未成 → 撤单 → 重发新价位.</p>
 <table>
   <thead><tr>
-    <th>开仓时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
-    <th class="num">入场价</th><th class="num">出场价</th>
-    <th class="num">毛盈亏</th><th class="num">滑点损益</th>
-    <th class="num">净盈亏</th><th>状态</th>
+    <th>报单时间</th><th>品种</th><th>方向</th><th>开平</th>
+    <th class="num">报价</th><th class="num">手数</th><th>状态</th>
   </tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>
@@ -500,14 +641,17 @@ def render_report(
     log_path: str,
     symbols: list[str] | None = None,
     sym_images: dict[str, str] | None = None,
+    cancelled: list[CsvTrade] | None = None,
+    csv_path: str | None = None,
 ) -> str:
-    summary = _aggregate(trips, target_date, win_start, win_end)
+    cancelled = cancelled or []
+    summary = _aggregate(trips, target_date, win_start, win_end,
+                         cancelled_count=len(cancelled))
 
     by_symbol: dict[str, list[RoundTrip]] = defaultdict(list)
     for rt in trips:
         by_symbol[rt.symbol_root].append(rt)
 
-    # 渲染顺序: 调用方指定的 symbols (有交易 ∪ 有图), fallback 到只有交易的
     if symbols is None:
         symbols = sorted(by_symbol.keys())
     images = sym_images or {}
@@ -516,6 +660,17 @@ def render_report(
         _render_symbol_section(sym, by_symbol.get(sym, []), pivots.get(sym), images.get(sym))
         for sym in sorted(symbols)
     )
+
+    # 数据源标记
+    if csv_path:
+        source_html = (
+            f"日志文件:{_h(Path(log_path).name)}  | "
+            f"<b>broker CSV:{_h(Path(csv_path).name)}</b>"
+        )
+    else:
+        source_html = f"日志文件:{_h(Path(log_path).name)}"
+
+    cancelled_html = _render_cancelled_table(cancelled) if cancelled else ""
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head>
@@ -528,20 +683,23 @@ def render_report(
   <div class="subtitle">
     交易日:<b>{target_date.isoformat()}</b>　|
     时间窗口:{win_start.strftime('%Y-%m-%d %H:%M')} → {win_end.strftime('%Y-%m-%d %H:%M')}
-    　|　日志文件:{_h(Path(log_path).name)}
+    　|　{source_html}
   </div>
 
   <h2>当日汇总</h2>
   {_render_summary(summary)}
 
   <h2>所有交易明细(按时间排序)</h2>
-  {_render_master_table(trips)}
+  {_render_master_table(trips, has_broker=summary.has_broker_data)}
+
+  {cancelled_html}
 
   {sym_sections}
 
   <div class="footer">
     生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     　|　工具:tools/daily_report
+    {(' · 数据源: broker CSV (主) + StraLog (上下文)' if csv_path else ' · 数据源: StraLog')}
   </div>
 </div>
 </body></html>

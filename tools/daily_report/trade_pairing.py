@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable
 
+from .csv_parser import CsvTrade
 from .log_parser import (
     LogEvent,
     parse_exec_open,
@@ -44,7 +45,7 @@ class TradeLeg:
     """一笔成交腿 (一个 ON_TRADE)."""
     ts: datetime
     symbol_root: str
-    instrument_id: str | None  # al2607 等; log 里没明确写, 留 None
+    instrument_id: str | None  # al2607 等; log 来源时 None, CSV 来源时填入
     side: str                  # "buy" | "sell"
     offset: str                # '0'=open, '1'=close_today, '3'=close_yesterday
     lots: int
@@ -52,8 +53,8 @@ class TradeLeg:
     send_price: float | None   # 同品种最近一次 EXEC_OPEN/EXEC_STOP price (报告显示用)
     oid: int
     is_open: bool              # offset=='0'
-    # 滑点 — 来自 log [滑点] tag, 同 oid 的 split fills 共享.
-    # 单位 ticks/手, 正 = 有利 (与金额方向一致, 已 flip log 原始符号).
+    # 滑点 — 来自 log [滑点] tag 或 CSV (send vs fill 差).
+    # 单位 ticks/手, 正 = 有利 (与金额方向一致).
     slip_ticks: float | None = None
     # 关联的决策上下文 (开仓时填; 平仓时记录触发原因)
     decision: dict | None = None        # POS_DECISION fields
@@ -61,17 +62,29 @@ class TradeLeg:
     ind: dict | None = None             # IND values
     signal: dict | None = None          # SIGNAL fields
     trail_stop: dict | None = None      # TRAIL_STOP close vs line
+    # ── CSV 流程专属字段 (broker 真值, log 流程下 None) ──
+    fee: float = 0.0                    # 手续费 (元)
+    broker_pnl: float | None = None     # broker 盯市盈亏 (含隔夜价差, 仅平仓有)
+    per_trade_pnl: float | None = None  # 逐笔盈亏 (按本笔开仓价, 仅平仓有)
+    full_name: str | None = None        # 棕榈油2609
+    is_takeover: bool = False           # 隔夜接管的孤儿平仓标记
 
 
 @dataclass
 class RoundTrip:
-    """一个完整 (或部分) 配对."""
+    """一个完整 (或部分) 配对.
+
+    特殊形态:
+      - exit=None: 持有中 (open round trip)
+      - is_takeover=True: 隔夜接管的孤儿平仓 (entry 是占位; 真正盈亏看 exit.broker_pnl)
+    """
     symbol_root: str
     direction: str             # "long" | "short"
     lots: int
     entry: TradeLeg
     exit: TradeLeg | None      # None → 持有中
     multiplier: float
+    is_takeover: bool = False  # entry 不是当日开仓, 是 state.json 接管的占位
 
     @property
     def is_open(self) -> bool:
@@ -79,6 +92,9 @@ class RoundTrip:
 
     @property
     def gross_pnl(self) -> float:
+        # 隔夜接管孤儿平仓 — 没法算 gross (没有真开仓价), 用 broker_pnl 代替
+        if self.is_takeover and self.exit is not None:
+            return self.exit.broker_pnl or 0.0
         if self.exit is None:
             return 0.0
         if self.direction == "long":
@@ -289,6 +305,9 @@ def _close_fifo(
         head = queue[0]
         take = min(head.lots, remaining)
         # 拆分 entry 和 exit, 保留剩余手数
+        # 拆分时按 take/orig_lots 比例分摊手续费 (broker 报回的是整笔的)
+        head_ratio = take / head.lots if head.lots else 1.0
+        close_ratio = take / close_leg.lots if close_leg.lots else 1.0
         entry_part = TradeLeg(
             ts=head.ts, symbol_root=head.symbol_root, instrument_id=head.instrument_id,
             side=head.side, offset=head.offset, lots=take,
@@ -296,6 +315,11 @@ def _close_fifo(
             is_open=True, slip_ticks=head.slip_ticks,
             decision=head.decision, execute=head.execute,
             ind=head.ind, signal=head.signal, trail_stop=head.trail_stop,
+            fee=head.fee * head_ratio,
+            broker_pnl=None,                 # 开仓没有 broker_pnl
+            per_trade_pnl=None,
+            full_name=head.full_name,
+            is_takeover=head.is_takeover,
         )
         exit_part = TradeLeg(
             ts=close_leg.ts, symbol_root=close_leg.symbol_root, instrument_id=close_leg.instrument_id,
@@ -304,6 +328,12 @@ def _close_fifo(
             is_open=False, slip_ticks=close_leg.slip_ticks,
             decision=close_leg.decision, execute=close_leg.execute,
             ind=close_leg.ind, signal=close_leg.signal, trail_stop=close_leg.trail_stop,
+            fee=close_leg.fee * close_ratio,
+            broker_pnl=(close_leg.broker_pnl * close_ratio
+                        if close_leg.broker_pnl is not None else None),
+            per_trade_pnl=(close_leg.per_trade_pnl * close_ratio
+                           if close_leg.per_trade_pnl is not None else None),
+            full_name=close_leg.full_name,
         )
         out.append(RoundTrip(
             symbol_root=head.symbol_root, direction=direction, lots=take,
@@ -315,3 +345,183 @@ def _close_fifo(
             head.lots -= take  # type: ignore[misc]  # mutating dataclass; ok for queue head
         remaining -= take
     # 若 remaining > 0 (平仓量超出开仓队列) — 忽略, 可能是策略外的预存仓
+
+
+# ---------------------------------------------------------------------------
+# CSV-driven pairing — broker 真值版 (2026-04-28+)
+# ---------------------------------------------------------------------------
+
+
+def _csv_to_leg(t: CsvTrade) -> TradeLeg:
+    """CSV 一行 → TradeLeg (含 broker 真值字段)."""
+    spec = get_spec(t.symbol_root)
+    # 滑点 (单位: ticks/手, 正=有利, 与金额方向一致)
+    slip_ticks: float | None = None
+    if t.send_price is not None and t.fill_price is not None and spec.tick_size > 0:
+        diff = t.fill_price - t.send_price
+        # 买单: fill 比 send 低 = 有利; 卖单: fill 比 send 高 = 有利
+        sign = -1 if t.side == "buy" else 1
+        slip_ticks = sign * diff / spec.tick_size
+
+    return TradeLeg(
+        ts=t.fill_ts or t.send_ts,
+        symbol_root=t.symbol_root,
+        instrument_id=t.instrument_id,
+        side=t.side,
+        offset=t.offset,
+        lots=t.fill_lots,
+        fill_price=t.fill_price or 0.0,
+        send_price=t.send_price,
+        oid=t.seq,                       # CSV 序号当 oid 用 (broker 报单编号太长易混)
+        is_open=(t.offset == "0"),
+        slip_ticks=slip_ticks,
+        fee=t.fee,
+        broker_pnl=t.broker_pnl,
+        per_trade_pnl=t.per_trade_pnl,
+        full_name=t.full_name,
+    )
+
+
+def _attach_log_context(leg: TradeLeg, log_index: dict[str, list[LogEvent]]) -> None:
+    """从 log_events 里找 leg 同 symbol 时间最近的 POS_DECISION / EXECUTE / IND /
+    SIGNAL / TRAIL_STOP 注入到 leg.
+
+    log_events 按 symbol 预分组 (大写 root). 用线性扫描 (每品种事件不多).
+    """
+    sym_events = log_index.get(leg.symbol_root) or log_index.get(
+        leg.symbol_root.lower()
+    )
+    if not sym_events:
+        return
+    last_dec = last_exec = last_ind = last_sig = last_trail = None
+    for ev in sym_events:
+        if ev.event_ts > leg.ts:
+            break  # 之后的 event 不影响这条 leg
+        if ev.tag == "POS_DECISION":
+            d = parse_pos_decision(ev.body)
+            if d:
+                last_dec = d
+        elif ev.tag == "EXECUTE":
+            d = parse_execute(ev.body)
+            if d:
+                last_exec = d
+        elif ev.tag == "IND":
+            d = parse_ind(ev.body)
+            if d:
+                last_ind = d
+        elif ev.tag == "SIGNAL":
+            d = parse_signal(ev.body)
+            if d:
+                last_sig = d
+        elif ev.tag == "TRAIL_STOP":
+            d = parse_trail_stop(ev.body)
+            if d:
+                last_trail = d
+        elif ev.tag == "EXEC_STOP":
+            # exec_stop 也用 EXECUTE 接口暴露 reason
+            d = parse_exec_stop(ev.body)
+            if d:
+                last_exec = {
+                    "action": d["reason"],  # HARD_STOP / TRAIL_STOP / 等
+                    "price": d["price"],
+                    "own_pos": 0,
+                    "target": 0,
+                    "reason": f"{d['reason']} {d['side']} {d['lots']}手",
+                }
+    leg.decision = last_dec
+    leg.execute = last_exec
+    leg.ind = last_ind
+    leg.signal = last_sig
+    if not leg.is_open:
+        leg.trail_stop = last_trail  # 平仓才显示移损线
+
+
+def _build_log_index(events: Iterable[LogEvent]) -> dict[str, list[LogEvent]]:
+    """按 symbol (大写 root) 分组 LogEvent. 同 symbol 内保持时序."""
+    out: dict[str, list[LogEvent]] = defaultdict(list)
+    for ev in events:
+        out[ev.symbol.upper()].append(ev)
+    return out
+
+
+def pair_from_csv(
+    csv_trades: list[CsvTrade],
+    log_events: Iterable[LogEvent] | None = None,
+) -> list[RoundTrip]:
+    """从 broker CSV 配对 round-trips.
+
+    与 pair_trades (log 版) 的区别:
+      - 使用 broker 报回的真实成交 (含手续费 / broker_pnl / 逐笔 pnl)
+      - 处理隔夜接管的孤儿平仓 (today close, no today open) → is_takeover RoundTrip
+      - 撤单不进 round_trips (调用方单独处理)
+      - log_events 仅用于注入决策上下文 (POS_DECISION / EXECUTE / IND / SIGNAL / TRAIL_STOP)
+    """
+    log_index = _build_log_index(log_events) if log_events else {}
+
+    # 按 instrument_id 分队列 (避免 hc2510 / hc2511 跨合约混)
+    long_q: dict[str, deque[TradeLeg]] = defaultdict(deque)
+    short_q: dict[str, deque[TradeLeg]] = defaultdict(deque)
+    round_trips: list[RoundTrip] = []
+
+    # 只配对成交 (跳过完全撤单)
+    fills = [t for t in csv_trades if t.is_filled and t.fill_lots > 0]
+    fills.sort(key=lambda t: t.fill_ts or t.send_ts)
+
+    for t in fills:
+        leg = _csv_to_leg(t)
+        _attach_log_context(leg, log_index)
+        spec = get_spec(t.symbol_root)
+        inst = t.instrument_id
+
+        if leg.is_open:
+            (long_q if leg.side == "buy" else short_q)[inst].append(leg)
+            continue
+
+        # 平仓 — FIFO 取对应方向开仓
+        queue = long_q[inst] if leg.side == "sell" else short_q[inst]
+        direction = "long" if leg.side == "sell" else "short"
+
+        if not queue:
+            # 隔夜接管的孤儿平仓 — 没今日开仓配对 (e.g. JM 21:16 trail_stop)
+            placeholder = TradeLeg(
+                ts=leg.ts, symbol_root=leg.symbol_root,
+                instrument_id=leg.instrument_id,
+                side="buy" if direction == "long" else "sell",
+                offset="0", lots=leg.lots,
+                fill_price=0.0,                # 真开仓价在昨天, 这里没有
+                send_price=None, oid=-1, is_open=True,
+                is_takeover=True,
+                full_name=leg.full_name,
+            )
+            round_trips.append(RoundTrip(
+                symbol_root=leg.symbol_root, direction=direction, lots=leg.lots,
+                entry=placeholder, exit=leg, multiplier=spec.multiplier,
+                is_takeover=True,
+            ))
+            continue
+
+        _close_fifo(queue, leg, direction, spec, round_trips)
+
+    # 收尾: 持有中
+    for inst, q in long_q.items():
+        spec = get_spec(_root_from_inst(inst))
+        for leg in q:
+            round_trips.append(RoundTrip(
+                symbol_root=leg.symbol_root, direction="long", lots=leg.lots,
+                entry=leg, exit=None, multiplier=spec.multiplier,
+            ))
+    for inst, q in short_q.items():
+        spec = get_spec(_root_from_inst(inst))
+        for leg in q:
+            round_trips.append(RoundTrip(
+                symbol_root=leg.symbol_root, direction="short", lots=leg.lots,
+                entry=leg, exit=None, multiplier=spec.multiplier,
+            ))
+
+    return round_trips
+
+
+def _root_from_inst(instrument_id: str) -> str:
+    import re as _re
+    m = _re.match(r"^([A-Za-z]+)", instrument_id.strip())
+    return m.group(1).upper() if m else instrument_id.upper()

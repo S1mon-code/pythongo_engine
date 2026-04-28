@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<title>实盘交易日报 2026-04-28</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px 40px; background: #ffffff; color: #1a1a1a;
+       font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+                    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+       line-height: 1.55; font-size: 13px; }
+.wrap { max-width: 1280px; margin: 0 auto; }
+h1 { color: #1a1a1a; font-size: 22px; margin: 0 0 4px 0; font-weight: 600;
+     letter-spacing: -0.2px; }
+h2 { color: #1a1a1a; font-size: 15px; margin: 28px 0 10px 0;
+     padding-bottom: 6px; border-bottom: 1px solid #1a1a1a;
+     font-weight: 600; letter-spacing: 0.2px; }
+h3 { color: #555; font-size: 12px; margin: 18px 0 6px 0; font-weight: 600;
+     text-transform: uppercase; letter-spacing: 0.5px; }
+.subtitle { color: #777; font-size: 12px; margin-bottom: 20px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+         gap: 0; margin: 12px 0 8px 0; border: 1px solid #d0d0d0; }
+.card { padding: 14px 18px; border-right: 1px solid #d0d0d0; }
+.card:last-child { border-right: none; }
+.card .label { font-size: 11px; color: #666; margin-bottom: 6px;
+                text-transform: uppercase; letter-spacing: 0.3px; }
+.card .value { font-size: 20px; font-weight: 600; color: #1a1a1a;
+                font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px;
+        margin: 0 0 8px 0; }
+th { text-align: left; padding: 8px 10px; background: transparent;
+     border-bottom: 1px solid #1a1a1a; color: #1a1a1a; font-weight: 600;
+     font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+td { padding: 7px 10px; border-bottom: 1px solid #eeeeee; color: #1a1a1a; }
+tr:last-child td { border-bottom: 1px solid #d0d0d0; }
+.num { text-align: right; font-variant-numeric: tabular-nums;
+       font-family: 'SF Mono', Menlo, Consolas, monospace; }
+.neg { color: #b10000; }
+.dim { color: #999; }
+.section { padding: 0; margin-bottom: 24px; }
+.chart-box { margin: 8px 0 14px 0; border: 1px solid #e0e0e0; padding: 4px;
+              background: #fafafa; }
+.chart-box img { display: block; max-width: 100%; height: auto; }
+.pivot-box { background: #fafafa; border: 1px solid #e0e0e0;
+             padding: 12px 16px; margin: 8px 0 12px 0; font-size: 12.5px; }
+.pivot-box .formula { font-family: 'SF Mono', Menlo, Consolas, monospace;
+                       font-size: 12px; color: #1a1a1a; padding: 4px 0;
+                       white-space: pre-wrap; }
+.pivot-box .conds { color: #1a1a1a; font-size: 12.5px; padding-left: 20px;
+                     margin: 2px 0 6px 0; }
+.pivot-box .conds li { margin: 2px 0; }
+.pivot-box .label { font-size: 11px; color: #666; margin-top: 10px;
+                     font-weight: 600; text-transform: uppercase;
+                     letter-spacing: 0.3px; }
+.pivot-box hr { border: 0; border-top: 1px solid #e0e0e0; margin: 10px 0; }
+.muted { color: #999; font-size: 11px; }
+.footer { color: #999; font-size: 11px; text-align: left; margin-top: 32px;
+          padding-top: 12px; border-top: 1px solid #e0e0e0; }
+.strategy-meta { color: #555; font-size: 11.5px; margin-top: 2px; }
+.takeover-tag { display: inline-block; padding: 1px 6px; border-radius: 3px;
+                font-size: 10.5px; background: #fff4e6; color: #b35900;
+                border: 1px solid #ffd99e; }
+@media print {
+  body { padding: 16px; }
+  .section { page-break-inside: avoid; }
+}
+</style>
+</head><body>
+<div class="wrap">
+  <h1>PythonGO 实盘交易日报</h1>
+  <div class="subtitle">
+    交易日:<b>2026-04-28</b>　|
+    时间窗口:2026-04-27 21:00 → 2026-04-28 15:00
+    　|　日志文件:StraLog(6).txt  | <b>broker CSV:实时回报(信息导出)_2026_04_28-15_12_43(1).csv</b>
+  </div>
+
+  <h2>当日汇总</h2>
+  
+<div class="cards">
+  <div class="card">
+    <div class="label">净盈亏 (broker − 手续费)</div>
+    <div class="value ">¥1,606.70</div>
+  </div>
+  <div class="card">
+    <div class="label">broker 平仓盈亏</div>
+    <div class="value ">¥1,695.00</div>
+  </div>
+  <div class="card">
+    <div class="label">逐笔盈亏 (本笔成本)</div>
+    <div class="value neg">−¥1,400.00</div>
+  </div>
+  <div class="card">
+    <div class="label">手续费</div>
+    <div class="value ">¥88.30</div>
+  </div>
+  <div class="card">
+    <div class="label">已平仓 / 持有中</div>
+    <div class="value">7 / 1<span class='muted'> (含接管 2)</span><span class='muted'> · 撤单 3</span></div>
+  </div>
+  <div class="card">
+    <div class="label">交易品种</div>
+    <div class="value">HC, JM, P, PP</div>
+  </div>
+</div>
+
+
+  <h2>所有交易明细(按时间排序)</h2>
+  
+<table>
+  <thead>
+<tr>
+  <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
+  <th class="num">入场价</th><th class="num">出场价</th>
+  <th class="num">broker盈亏</th><th class="num">逐笔盈亏</th>
+  <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
+</tr></thead>
+  <tbody>
+<tr>
+  <td>04-27 21:16:00</td>
+  <td><b>JM</b></td>
+  <td>多</td>
+  <td class="num">2</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">1,268.5</td>
+  <td class="num neg">−¥540.00</td>
+  <td class="num neg">−¥1,440.00</td>
+  <td class="num">¥15.25</td>
+  <td class="num neg"><b>−¥555.25</b></td>
+  <td><span class="takeover-tag">隔夜接管</span></td>
+</tr>
+
+<tr>
+  <td>04-27 21:20:00</td>
+  <td><b>PP</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">8,544.0</td>
+  <td class="num ">¥1,220.00</td>
+  <td class="num ">¥595.00</td>
+  <td class="num">¥4.05</td>
+  <td class="num "><b>¥1,215.95</b></td>
+  <td><span class="takeover-tag">隔夜接管</span></td>
+</tr>
+
+<tr>
+  <td>04-27 22:00:02</td>
+  <td><b>HC</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">3,393.0</td>
+  <td class="num">3,386.0</td>
+  <td class="num neg">−¥280.00</td>
+  <td class="num neg">−¥280.00</td>
+  <td class="num">¥27.21</td>
+  <td class="num neg"><b>−¥307.21</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-27 22:00:07</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">2</td>
+  <td class="num">9,760.0</td>
+  <td class="num">9,767.0</td>
+  <td class="num neg">−¥1,000.00</td>
+  <td class="num neg">−¥1,310.00</td>
+  <td class="num">¥10.06</td>
+  <td class="num neg"><b>−¥1,010.06</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 10:00:05</td>
+  <td><b>PP</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">8,579.0</td>
+  <td class="num">8,674.3</td>
+  <td class="num ">¥3,345.00</td>
+  <td class="num ">¥2,235.00</td>
+  <td class="num">¥8.10</td>
+  <td class="num "><b>¥3,336.90</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 11:15:00</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,701.0</td>
+  <td class="num">9,736.0</td>
+  <td class="num neg">−¥525.00</td>
+  <td class="num neg">−¥600.00</td>
+  <td class="num">¥5.04</td>
+  <td class="num neg"><b>−¥530.03</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 14:15:05</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,747.0</td>
+  <td class="num">9,736.0</td>
+  <td class="num neg">−¥525.00</td>
+  <td class="num neg">−¥600.00</td>
+  <td class="num">¥5.04</td>
+  <td class="num neg"><b>−¥530.03</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 14:15:05</td>
+  <td><b>HC</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">3,379.0</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num dim">—</td>
+  <td class="num dim">—</td>
+  <td class="num">¥13.56</td>
+  <td class="num "><b>¥0.00</b></td>
+  <td>持有中</td>
+</tr>
+</tbody>
+</table>
+
+
+  
+<h2>当日撤单 (3 笔)</h2>
+<p class="muted">通常由 OrderMonitor escalator 触发: 挂单超时未成 → 撤单 → 重发新价位.</p>
+<table>
+  <thead><tr>
+    <th>报单时间</th><th>品种</th><th>方向</th><th>开平</th>
+    <th class="num">报价</th><th class="num">手数</th><th>状态</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>04-27 22:00:02</td>
+  <td><b>P</b></td>
+  <td>买</td>
+  <td>开仓</td>
+  <td class="num">9,757.0</td>
+  <td class="num">2</td>
+  <td class="muted">撤单</td>
+</tr>
+
+<tr>
+  <td>04-28 10:00:00</td>
+  <td><b>PP</b></td>
+  <td>买</td>
+  <td>开仓</td>
+  <td class="num">8,575.0</td>
+  <td class="num">4</td>
+  <td class="muted">撤单</td>
+</tr>
+
+<tr>
+  <td>04-28 14:15:00</td>
+  <td><b>P</b></td>
+  <td>买</td>
+  <td>开仓</td>
+  <td class="num">9,746.0</td>
+  <td class="num">1</td>
+  <td class="muted">撤单</td>
+</tr>
+</tbody>
+</table>
+
+
+  
+<div class="section">
+  <h2>HC <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = 10　|　最小变动价位 = 1</span></h2>
+  <div class="chart-box"><img src="HC.jpg" alt="HC 盘面" /></div>
+  
+<div class="pivot-box">
+  <div><b>HC_Long_1H_V8_Donchian_ADX_Filter</b> <span class="muted">(V8 做多信号家族)</span></div>
+  <div class="strategy-meta">参数:DC_PERIOD=40, ADX_PERIOD=14, ADX_THRESHOLD=22.0, SIGNAL_SCALE=1.5, CHANDELIER_PERIOD=22, CHANDELIER_MULT=2.58, FORECAST_SCALAR=10.0, FORECAST_CAP=20.0, MAX_LOTS=5　|　硬止损 0.5%　|　移动止损 0.3%</div>
+
+  <div class="label">入场信号公式</div>
+  <div class="formula">信号 = clip((close − DC_M) / (DC_U − DC_M) × 1.5, 0, 1)</div>
+
+  <div class="label">入场前置条件(全部满足才开仓)</div>
+  <ul class="conds"><li>ADX &gt; 22.0(趋势强度过阈值)</li><li>PDI &gt; MDI(多头方向占优)</li><li>close &gt; DC_M(收盘在 Donchian 中轴之上)</li></ul>
+
+  <div class="label">出场触发(任一即平仓)</div>
+  <ul class="conds"><li>移动止损 (TRAIL_STOP):当前价 ≤ 移损线 → 平仓(分钟级判断,降噪)</li><li>硬止损 (HARD_STOP):tick 级,当前价 ≤ 入场均价 × (1 − 0.5%) → 立即平仓</li><li>吊灯出场 (Chandelier):close &lt; 持仓期间最高价(22根) − 2.58×ATR</li><li>信号反转 (SIGNAL_REVERSAL):POS_DECISION optimal=0 → 平仓</li></ul>
+
+  <div class="label">移动止损线生成方式</div>
+  <div class="formula">持仓开始后,每个 tick 实时更新 peak_price = max(peak_price, last_price);
+移损线 = peak_price × (1 − 0.3%) = peak_price × 0.99700;
+判断频率:每分钟首个 tick(同一分钟只判一次,降噪);
+触发条件:last_price ≤ 移损线 → 立即穿盘口平仓 (urgent)。
+持仓重置点:开仓 / 加仓 / 减仓 / 平仓 → peak 重新初始化为入场价。</div>
+</div>
+
+  <h3>开仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th>
+    <th class="num">原始信号 raw</th><th class="num">理论手数</th>
+    <th class="num">目标手数</th><th class="num">ATR</th>
+    <th>当时指标值</th><th>EXECUTE 原因</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>22:00:02</td>
+  <td class="num">4</td>
+  <td class="num">3,393.0</td>
+  <td class="num">3,393.0</td>
+  <td class="num">5.00</td>
+  <td class="num">5</td>
+  <td class="num">4</td>
+  <td class="num">12.77</td>
+  <td>DC_U=3426.0 DC_M=3369.5 close=3393.0 ADX=55.4 PDI=26.2 MDI=9.3</td>
+  <td>signal=0.62 forecast=6.2 optimal=5 target=4</td>
+</tr>
+
+<tr>
+  <td>14:15:05</td>
+  <td class="num">4</td>
+  <td class="num">3,379.0</td>
+  <td class="num">3,379.0</td>
+  <td class="num">5.00</td>
+  <td class="num">5</td>
+  <td class="num">4</td>
+  <td class="num">13.16</td>
+  <td>DC_U=3426.0 DC_M=3369.5 close=3379.0 ADX=44.8 PDI=21.1 MDI=19.1</td>
+  <td>signal=0.25 forecast=2.5 optimal=5 target=4</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>平仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>平仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th><th>触发条件</th><th>详情</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>09:10:00</td>
+  <td class="num">4</td>
+  <td class="num">3,386.0</td>
+  <td class="num">3,381.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 3386.0 ≤ 移损线 3386.8</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>本品种交易明细</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th>方向</th><th class="num">手数</th>
+    <th class="num">入场成本</th><th class="num">出场成本</th>
+    <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+    <th class="num">净盈亏</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>22:00:02</td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">3,393.0</td>
+  <td class="num">3,386.0</td>
+  <td class="num neg">−¥280.00</td>
+  <td class="num ">¥200.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num neg"><b>−¥80.00</b></td>
+</tr>
+
+<tr>
+  <td>14:15:05</td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">3,379.0</td>
+  <td class="num"><span class="dim">持有中</span></td>
+  <td class="num ">—</td>
+  <td class="num ">¥0.00 (0跳)</td>
+  <td class="num "><b>¥0.00</b></td>
+</tr>
+</tbody>
+</table>
+
+</div>
+
+<div class="section">
+  <h2>JM <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = 60　|　最小变动价位 = 0.5</span></h2>
+  
+  
+<div class="pivot-box">
+  <div><b>JM_Long_1H_V13_Donchian_MFI</b> <span class="muted">(V13 做多信号家族)</span></div>
+  <div class="strategy-meta">参数:DC_PERIOD=50, MFI_PERIOD=20, MFI_FLOOR=50.0, BREAKOUT_WEIGHT=0.6, CHANDELIER_PERIOD=22, CHANDELIER_MULT=3.0, FORECAST_SCALAR=10.0, FORECAST_CAP=20.0, MAX_LOTS=5　|　硬止损 0.5%　|　移动止损 0.3%</div>
+
+  <div class="label">入场信号公式</div>
+  <div class="formula">通道位置 pos = (close − DC_L) / (DC_U − DC_L); 通道信号 don_sig = clip((pos − 0.5) × 3, 0, 1) 当 pos &gt; 0.5,否则 0; 资金流信号 mfi_sig = clip((MFI − 50.0) / 30, 0, 1) 当 MFI &gt; 50.0,否则 0; 综合信号 = 0.6 × don_sig + 0.4 × mfi_sig</div>
+
+  <div class="label">入场前置条件(全部满足才开仓)</div>
+  <ul class="conds"><li>通道位置 pos &gt; 0.5(close 在 Donchian 通道上半部)</li><li>MFI &gt; 50.0(资金净流入)</li></ul>
+
+  <div class="label">出场触发(任一即平仓)</div>
+  <ul class="conds"><li>移动止损 (TRAIL_STOP):当前价 ≤ 移损线 → 平仓(分钟级判断,降噪)</li><li>硬止损 (HARD_STOP):tick 级,当前价 ≤ 入场均价 × (1 − 0.5%) → 立即平仓</li><li>吊灯出场 (Chandelier):close &lt; 持仓期间最高价(22根) − 3.0×ATR</li><li>信号反转 (SIGNAL_REVERSAL):POS_DECISION optimal=0 → 平仓</li></ul>
+
+  <div class="label">移动止损线生成方式</div>
+  <div class="formula">持仓开始后,每个 tick 实时更新 peak_price = max(peak_price, last_price);
+移损线 = peak_price × (1 − 0.3%) = peak_price × 0.99700;
+判断频率:每分钟首个 tick(同一分钟只判一次,降噪);
+触发条件:last_price ≤ 移损线 → 立即穿盘口平仓 (urgent)。
+持仓重置点:开仓 / 加仓 / 减仓 / 平仓 → peak 重新初始化为入场价。</div>
+</div>
+
+  <h3>开仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th>
+    <th class="num">原始信号 raw</th><th class="num">理论手数</th>
+    <th class="num">目标手数</th><th class="num">ATR</th>
+    <th>当时指标值</th><th>EXECUTE 原因</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:16:00</td>
+  <td class="num">2</td>
+  <td class="num">0.00</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td><span class="dim">—</span></td>
+  <td><span class="dim">—</span></td>
+</tr>
+</tbody>
+</table>
+
+  <h3>平仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>平仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th><th>触发条件</th><th>详情</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:16:00</td>
+  <td class="num">2</td>
+  <td class="num">1,268.5</td>
+  <td class="num">1,266.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 1269.0 ≤ 移损线 1269.2</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>本品种交易明细</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th>方向</th><th class="num">手数</th>
+    <th class="num">入场成本</th><th class="num">出场成本</th>
+    <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+    <th class="num">净盈亏</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:16:00</td>
+  <td>多</td>
+  <td class="num">2</td>
+  <td class="num">0.00</td>
+  <td class="num">1,268.5</td>
+  <td class="num neg">−¥540.00</td>
+  <td class="num ">¥300.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num neg"><b>−¥240.00</b></td>
+</tr>
+</tbody>
+</table>
+
+</div>
+
+<div class="section">
+  <h2>P <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = 10　|　最小变动价位 = 2</span></h2>
+  <div class="chart-box"><img src="P.jpg" alt="P 盘面" /></div>
+  
+<div class="pivot-box">
+  <div><b>P_Long_1H_V13_Donchian_MFI</b> <span class="muted">(V13 做多信号家族)</span></div>
+  <div class="strategy-meta">参数:DC_PERIOD=50, MFI_PERIOD=20, MFI_FLOOR=50.0, BREAKOUT_WEIGHT=0.6, CHANDELIER_PERIOD=22, CHANDELIER_MULT=3.0, FORECAST_SCALAR=10.0, FORECAST_CAP=20.0, MAX_LOTS=5　|　硬止损 0.5%　|　移动止损 0.3%</div>
+
+  <div class="label">入场信号公式</div>
+  <div class="formula">通道位置 pos = (close − DC_L) / (DC_U − DC_L); 通道信号 don_sig = clip((pos − 0.5) × 3, 0, 1) 当 pos &gt; 0.5,否则 0; 资金流信号 mfi_sig = clip((MFI − 50.0) / 30, 0, 1) 当 MFI &gt; 50.0,否则 0; 综合信号 = 0.6 × don_sig + 0.4 × mfi_sig</div>
+
+  <div class="label">入场前置条件(全部满足才开仓)</div>
+  <ul class="conds"><li>通道位置 pos &gt; 0.5(close 在 Donchian 通道上半部)</li><li>MFI &gt; 50.0(资金净流入)</li></ul>
+
+  <div class="label">出场触发(任一即平仓)</div>
+  <ul class="conds"><li>移动止损 (TRAIL_STOP):当前价 ≤ 移损线 → 平仓(分钟级判断,降噪)</li><li>硬止损 (HARD_STOP):tick 级,当前价 ≤ 入场均价 × (1 − 0.5%) → 立即平仓</li><li>吊灯出场 (Chandelier):close &lt; 持仓期间最高价(22根) − 3.0×ATR</li><li>信号反转 (SIGNAL_REVERSAL):POS_DECISION optimal=0 → 平仓</li></ul>
+
+  <div class="label">移动止损线生成方式</div>
+  <div class="formula">持仓开始后,每个 tick 实时更新 peak_price = max(peak_price, last_price);
+移损线 = peak_price × (1 − 0.3%) = peak_price × 0.99700;
+判断频率:每分钟首个 tick(同一分钟只判一次,降噪);
+触发条件:last_price ≤ 移损线 → 立即穿盘口平仓 (urgent)。
+持仓重置点:开仓 / 加仓 / 减仓 / 平仓 → peak 重新初始化为入场价。</div>
+</div>
+
+  <h3>开仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th>
+    <th class="num">原始信号 raw</th><th class="num">理论手数</th>
+    <th class="num">目标手数</th><th class="num">ATR</th>
+    <th>当时指标值</th><th>EXECUTE 原因</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>22:00:07</td>
+  <td class="num">2</td>
+  <td class="num">9,760.0</td>
+  <td class="num">9,760.0</td>
+  <td class="num">3.11</td>
+  <td class="num">3</td>
+  <td class="num">2</td>
+  <td class="num">66.10</td>
+  <td>DC_U=9900.0 DC_M=9550.0 DC_L=9200.0 close=9757.0 MFI=45.4</td>
+  <td>signal=0.53 forecast=5.3 optimal=3 target=2</td>
+</tr>
+
+<tr>
+  <td>11:15:00</td>
+  <td class="num">1</td>
+  <td class="num">9,701.0</td>
+  <td class="num">9,701.0</td>
+  <td class="num">2.23</td>
+  <td class="num">2</td>
+  <td class="num">1</td>
+  <td class="num">67.15</td>
+  <td>DC_U=9900.0 DC_M=9550.0 DC_L=9200.0 close=9701.0 MFI=42.5</td>
+  <td>signal=0.39 forecast=3.9 optimal=2 target=1</td>
+</tr>
+
+<tr>
+  <td>14:15:05</td>
+  <td class="num">1</td>
+  <td class="num">9,747.0</td>
+  <td class="num">9,747.0</td>
+  <td class="num">2.90</td>
+  <td class="num">3</td>
+  <td class="num">2</td>
+  <td class="num">67.28</td>
+  <td>DC_U=9900.0 DC_M=9550.0 DC_L=9200.0 close=9747.0 MFI=48.6</td>
+  <td>signal=0.51 forecast=5.1 optimal=3 target=2</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>平仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>平仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th><th>触发条件</th><th>详情</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>09:08:00</td>
+  <td class="num">2</td>
+  <td class="num">9,767.0</td>
+  <td class="num">9,757.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 9767.0 ≤ 移损线 9769.6</td>
+</tr>
+
+<tr>
+  <td>14:26:00</td>
+  <td class="num">1</td>
+  <td class="num">9,736.0</td>
+  <td class="num">9,726.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 9736.0 ≤ 移损线 9738.7</td>
+</tr>
+
+<tr>
+  <td>14:26:00</td>
+  <td class="num">1</td>
+  <td class="num">9,736.0</td>
+  <td class="num">9,726.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 9736.0 ≤ 移损线 9738.7</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>本品种交易明细</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th>方向</th><th class="num">手数</th>
+    <th class="num">入场成本</th><th class="num">出场成本</th>
+    <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+    <th class="num">净盈亏</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>22:00:07</td>
+  <td>多</td>
+  <td class="num">2</td>
+  <td class="num">9,760.0</td>
+  <td class="num">9,767.0</td>
+  <td class="num ">¥140.00</td>
+  <td class="num ">¥200.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num "><b>¥340.00</b></td>
+</tr>
+
+<tr>
+  <td>11:15:00</td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,701.0</td>
+  <td class="num">9,736.0</td>
+  <td class="num ">¥350.00</td>
+  <td class="num ">¥100.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num "><b>¥450.00</b></td>
+</tr>
+
+<tr>
+  <td>14:15:05</td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,747.0</td>
+  <td class="num">9,736.0</td>
+  <td class="num neg">−¥110.00</td>
+  <td class="num ">¥100.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num neg"><b>−¥10.00</b></td>
+</tr>
+</tbody>
+</table>
+
+</div>
+
+<div class="section">
+  <h2>PP <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = 5　|　最小变动价位 = 1</span></h2>
+  <div class="chart-box"><img src="PP.jpg" alt="PP 盘面" /></div>
+  
+<div class="pivot-box">
+  <div><b>PP_Long_1H_V13_Donchian_MFI</b> <span class="muted">(V13 做多信号家族)</span></div>
+  <div class="strategy-meta">参数:DC_PERIOD=50, MFI_PERIOD=20, MFI_FLOOR=50.0, BREAKOUT_WEIGHT=0.6, CHANDELIER_PERIOD=22, CHANDELIER_MULT=3.0, FORECAST_SCALAR=10.0, FORECAST_CAP=20.0, MAX_LOTS=5　|　硬止损 0.5%　|　移动止损 0.3%</div>
+
+  <div class="label">入场信号公式</div>
+  <div class="formula">通道位置 pos = (close − DC_L) / (DC_U − DC_L); 通道信号 don_sig = clip((pos − 0.5) × 3, 0, 1) 当 pos &gt; 0.5,否则 0; 资金流信号 mfi_sig = clip((MFI − 50.0) / 30, 0, 1) 当 MFI &gt; 50.0,否则 0; 综合信号 = 0.6 × don_sig + 0.4 × mfi_sig</div>
+
+  <div class="label">入场前置条件(全部满足才开仓)</div>
+  <ul class="conds"><li>通道位置 pos &gt; 0.5(close 在 Donchian 通道上半部)</li><li>MFI &gt; 50.0(资金净流入)</li></ul>
+
+  <div class="label">出场触发(任一即平仓)</div>
+  <ul class="conds"><li>移动止损 (TRAIL_STOP):当前价 ≤ 移损线 → 平仓(分钟级判断,降噪)</li><li>硬止损 (HARD_STOP):tick 级,当前价 ≤ 入场均价 × (1 − 0.5%) → 立即平仓</li><li>吊灯出场 (Chandelier):close &lt; 持仓期间最高价(22根) − 3.0×ATR</li><li>信号反转 (SIGNAL_REVERSAL):POS_DECISION optimal=0 → 平仓</li></ul>
+
+  <div class="label">移动止损线生成方式</div>
+  <div class="formula">持仓开始后,每个 tick 实时更新 peak_price = max(peak_price, last_price);
+移损线 = peak_price × (1 − 0.3%) = peak_price × 0.99700;
+判断频率:每分钟首个 tick(同一分钟只判一次,降噪);
+触发条件:last_price ≤ 移损线 → 立即穿盘口平仓 (urgent)。
+持仓重置点:开仓 / 加仓 / 减仓 / 平仓 → peak 重新初始化为入场价。</div>
+</div>
+
+  <h3>开仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th>
+    <th class="num">原始信号 raw</th><th class="num">理论手数</th>
+    <th class="num">目标手数</th><th class="num">ATR</th>
+    <th>当时指标值</th><th>EXECUTE 原因</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:20:00</td>
+  <td class="num">4</td>
+  <td class="num">0.00</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td class="num">—</td>
+  <td><span class="dim">—</span></td>
+  <td><span class="dim">—</span></td>
+</tr>
+
+<tr>
+  <td>10:00:05</td>
+  <td class="num">4</td>
+  <td class="num">8,579.0</td>
+  <td class="num">8,579.0</td>
+  <td class="num">5.00</td>
+  <td class="num">5</td>
+  <td class="num">4</td>
+  <td class="num">60.13</td>
+  <td>DC_U=8598.0 DC_M=8357.0 DC_L=8116.0 close=8576.0 MFI=84.6</td>
+  <td>signal=1.00 forecast=10.0 optimal=5 target=4</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>平仓原因</h3>
+  
+<table>
+  <thead><tr>
+    <th>平仓时间</th><th class="num">手数</th><th class="num">成交价</th>
+    <th class="num">送单价</th><th>触发条件</th><th>详情</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:20:00</td>
+  <td class="num">4</td>
+  <td class="num">8,544.0</td>
+  <td class="num">8,539.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 8545.0 ≤ 移损线 8556.3</td>
+</tr>
+
+<tr>
+  <td>11:29:00</td>
+  <td class="num">4</td>
+  <td class="num">8,674.3</td>
+  <td class="num">8,669.0</td>
+  <td><b>移动止损</b></td>
+  <td>当前价 8674.0 ≤ 移损线 8676.9</td>
+</tr>
+</tbody>
+</table>
+
+  <h3>本品种交易明细</h3>
+  
+<table>
+  <thead><tr>
+    <th>开仓时间</th><th>方向</th><th class="num">手数</th>
+    <th class="num">入场成本</th><th class="num">出场成本</th>
+    <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+    <th class="num">净盈亏</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>21:20:00</td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">0.00</td>
+  <td class="num">8,544.0</td>
+  <td class="num ">¥1,220.00</td>
+  <td class="num ">¥100.00 (合+5.0跳·均+2.5跳)</td>
+  <td class="num "><b>¥1,320.00</b></td>
+</tr>
+
+<tr>
+  <td>10:00:05</td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">8,579.0</td>
+  <td class="num">8,674.3</td>
+  <td class="num ">¥1,906.00</td>
+  <td class="num ">¥106.00 (合+5.3跳·均+2.6跳)</td>
+  <td class="num "><b>¥2,012.00</b></td>
+</tr>
+</tbody>
+</table>
+
+</div>
+
+
+  <div class="footer">
+    生成时间 2026-04-28 16:26:45
+    　|　工具:tools/daily_report
+     · 数据源: broker CSV (主) + StraLog (上下文)
+  </div>
+</div>
+</body></html>
