@@ -363,8 +363,14 @@ def _render_master_table(trips: list[RoundTrip], has_broker: bool) -> str:
         else:
             status_html = '已平仓'
 
-        # 入场价: takeover 显示 "—" (没有真开仓价)
-        entry_px = '<span class="dim">—</span>' if rt.is_takeover else _fmt_price(e.fill_price)
+        # 入场价: 真实价 (含 carryover 从前日 CSV 拿到的) → 显示;
+        # 仅孤儿 takeover (前日 CSV 缺失, fill_price=0) → 显示 "—"
+        if e.fill_price > 0:
+            entry_px = _fmt_price(e.fill_price)
+            if rt.is_takeover:
+                entry_px += '<span class="muted" style="font-size:10px;"> (前日)</span>'
+        else:
+            entry_px = '<span class="dim">—</span>'
         exit_px = _fmt_price(x.fill_price) if x else '<span class="dim">—</span>'
 
         # broker pnl + 逐笔 + fee
