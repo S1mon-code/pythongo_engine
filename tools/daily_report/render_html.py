@@ -342,9 +342,13 @@ def _trade_status(rt: RoundTrip) -> str:
     return "持有中" if rt.is_open else "已平仓"
 
 
-def _render_master_table(trips: list[RoundTrip], has_broker: bool) -> str:
+def _render_master_table(
+    trips: list[RoundTrip], has_broker: bool,
+    startup_states: dict[str, dict] | None = None,
+) -> str:
     if not trips:
         return '<p class="muted">本日无交易。</p>'
+    startup_states = startup_states or {}
     rows = []
     trips_sorted = sorted(trips, key=lambda r: r.entry.ts)
     for rt in trips_sorted:
@@ -363,12 +367,20 @@ def _render_master_table(trips: list[RoundTrip], has_broker: bool) -> str:
         else:
             status_html = '已平仓'
 
-        # 入场价: 真实价 (含 carryover 从前日 CSV 拿到的) → 显示;
-        # 仅孤儿 takeover (前日 CSV 缺失, fill_price=0) → 显示 "—"
+        # 入场价显示规则:
+        # 1. CSV 解析有真实价 (当日开仓 / carryover 接管) → 直接显示
+        # 2. 孤儿 takeover + strategy 启动时 own_pos > 0 → 用 ON_START avg_price (state.json 恢复)
+        # 3. 孤儿 takeover + strategy 启动时 own_pos = 0 → "—" (broker 异常事件)
+        startup = startup_states.get(rt.symbol_root, {})
         if e.fill_price > 0:
             entry_px = _fmt_price(e.fill_price)
             if rt.is_takeover:
                 entry_px += '<span class="muted" style="font-size:10px;"> (前日)</span>'
+        elif rt.is_takeover and startup.get("own_pos", 0) > 0:
+            entry_px = (
+                f'{_fmt_price(startup["avg_price"])}'
+                '<span class="muted" style="font-size:10px;"> (state恢复)</span>'
+            )
         else:
             entry_px = '<span class="dim">—</span>'
         exit_px = _fmt_price(x.fill_price) if x else '<span class="dim">—</span>'
@@ -641,6 +653,7 @@ def _render_symbol_section(
     pivot: PivotSpec | None,
     image_filename: str | None,
     sym_events: list[LogEvent] | None = None,
+    startup_state: dict | None = None,
 ) -> str:
     """新版 (2026-04-29+): 品种点评 — 配图 + 行情速览 + 本策略动作 + 今日总结.
 
@@ -670,7 +683,7 @@ def _render_symbol_section(
 """
 
     market_html = _render_market_overview(symbol, sym_events or [], trips)
-    actions_html = _render_strategy_actions(trips, spec)
+    actions_html = _render_strategy_actions(trips, spec, startup_state)
     summary_html = _render_symbol_summary(trips, spec)
 
     return f"""
@@ -772,7 +785,10 @@ def _render_market_overview(
     return "".join(parts)
 
 
-def _render_strategy_actions(trips: list[RoundTrip], spec: ContractSpec) -> str:
+def _render_strategy_actions(
+    trips: list[RoundTrip], spec: ContractSpec,
+    startup_state: dict | None = None,
+) -> str:
     """逐笔叙述 — 按时间排序, 每个 round-trip 一段中文."""
     parts: list[str] = []
     trips_sorted = sorted(trips, key=lambda r: r.entry.ts)
@@ -782,12 +798,22 @@ def _render_strategy_actions(trips: list[RoundTrip], spec: ContractSpec) -> str:
 
         # 开仓段
         if rt.is_takeover:
-            # 区分 "有真实入场价" (carryover, 来自前日 CSV) vs "无入场" (孤儿)
             if rt.entry.fill_price > 0:
+                # carryover: 有前日真实入场价
                 parts.append(_describe_carryover_open(rt.entry, rt.lots, rt.direction))
+            elif startup_state and startup_state.get("own_pos", 0) > 0:
+                # strategy 启动时有持仓但 CSV 推不出 → 用 ON_START 恢复的 avg_price
+                parts.append(_describe_startup_recovered_open(
+                    startup_state, rt.lots, rt.direction
+                ))
             else:
-                parts.append('<p><b>开仓</b>: 隔夜接管的持仓 — 入场价不可见 '
-                             '(前日 CSV 缺失, state.json 自昨日恢复 own_pos)</p>')
+                # 孤儿 takeover: strategy 启动时 own_pos=0, 此笔与 strategy 无关
+                parts.append(
+                    '<p><b>开仓</b>: <span class="muted">无对应 strategy 入场</span> — '
+                    'strategy 启动时 own_pos=0, broker 端报回此平仓但 strategy log 无记录. '
+                    '可能原因: broker 自动平仓 / 手动操作 / 底仓延迟成交 / broker 端时钟错位 '
+                    '与本日 strategy 平仓配对错乱.</p>'
+                )
         else:
             parts.append(_describe_open_leg(rt.entry, rt.lots, rt.direction))
 
@@ -808,6 +834,28 @@ def _action_title(rt: RoundTrip) -> str:
     if rt.exit is None:
         return f"{side} {rt.lots} 手 (新开, 持仓中)"
     return f"{side} {rt.lots} 手 (开 → 平 完整 round-trip)"
+
+
+def _describe_startup_recovered_open(
+    startup_state: dict, lots: int, direction: str,
+) -> str:
+    """从 strategy [ON_START 恢复] log 注入的入场叙述 (CSV 推不出但 state.json 恢复了).
+
+    使用场景: 前日 CSV 缺失, 但当日 strategy 启动时 [ON_START 恢复] own_pos > 0.
+    """
+    side_text = "买入" if direction == "long" else "卖出"
+    avg = startup_state.get("avg_price", 0.0)
+    own = startup_state.get("own_pos", 0)
+    peak = startup_state.get("peak_price", 0.0)
+    ts = startup_state.get("ts")
+    ts_str = ts.strftime("%m-%d %H:%M:%S") if ts else "前日"
+    return (
+        f'<p><b>开仓 (前日接管 / state.json 恢复)</b>: '
+        f'当日 {ts_str} strategy 启动时 own_pos={own}, '
+        f'avg_price=¥{avg:.1f}, peak=¥{peak:.1f}. '
+        f'本笔 {lots} 手按平均成本 ¥{avg:.1f} 计入 (前日 CSV 缺失, '
+        f'入场详情来自 strategy state.json).</p>'
+    )
 
 
 def _describe_carryover_open(leg: TradeLeg, lots: int, direction: str) -> str:
@@ -1063,6 +1111,7 @@ def render_report(
     cancelled: list[CsvTrade] | None = None,
     csv_path: str | None = None,
     log_events: list[LogEvent] | None = None,
+    startup_states: dict[str, dict] | None = None,
 ) -> str:
     cancelled = cancelled or []
     summary = _aggregate(trips, target_date, win_start, win_end,
@@ -1081,10 +1130,12 @@ def render_report(
         symbols = sorted(by_symbol.keys())
     images = sym_images or {}
 
+    startup_states = startup_states or {}
     sym_sections = "".join(
         _render_symbol_section(
             sym, by_symbol.get(sym, []), pivots.get(sym), images.get(sym),
             sym_events=events_by_symbol.get(sym),
+            startup_state=startup_states.get(sym),
         )
         for sym in sorted(symbols)
     )
@@ -1118,7 +1169,7 @@ def render_report(
   {_render_summary(summary)}
 
   <h2>所有交易明细(按时间排序)</h2>
-  {_render_master_table(trips, has_broker=summary.has_broker_data)}
+  {_render_master_table(trips, has_broker=summary.has_broker_data, startup_states=startup_states)}
 
   {cancelled_html}
 

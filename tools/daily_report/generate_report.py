@@ -31,7 +31,7 @@ from tools.daily_report.csv_parser import (
     parse_csv,
     split_filled_and_cancelled,
 )
-from tools.daily_report.log_parser import parse_log
+from tools.daily_report.log_parser import parse_log, parse_startup_states
 from tools.daily_report.pivot_extractor import extract_pivot
 from tools.daily_report.render_html import render_report
 from tools.daily_report.session_window import session_window_for
@@ -291,6 +291,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[INFO] 找到图片: {sorted(sym_images.keys())}")
 
     # 4. 渲染 HTML
+    # 解析当日 strategy 启动状态 (用于孤儿 takeover 区分真接管 vs broker 异常)
+    try:
+        startup_states = parse_startup_states(str(log_path))
+        if startup_states:
+            print(f"[INFO] strategy 启动状态: "
+                  f"{ {k: v['own_pos'] for k, v in startup_states.items()} }")
+    except (OSError, ValueError):
+        startup_states = {}
+
     html_text = render_report(
         target_date=target,
         win_start=win.start,
@@ -303,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         cancelled=cancelled_orders,
         csv_path=str(csv_path) if csv_path else None,
         log_events=events_in_window,
+        startup_states=startup_states,
     )
     out_path.write_text(html_text, encoding="utf-8")
     print(f"[OK] HTML 已生成: {out_path}")

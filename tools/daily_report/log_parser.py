@@ -118,6 +118,50 @@ _SIGNAL_RE = re.compile(r"raw=(?P<raw>-?\d+\.?\d*) forecast=(?P<forecast>-?\d+\.
 
 _SLIP_RE = re.compile(r"(?P<ticks>-?\d+\.?\d*)\s*ticks")
 
+# [ON_START 恢复] own_pos=4 avg=3379.0 peak=3403.5 my_oids=7
+_ON_START_RECOVER_RE = re.compile(
+    r"own_pos=(?P<own_pos>-?\d+)\s+avg=(?P<avg>[\d.]+)\s+peak=(?P<peak>[\d.]+)"
+)
+
+
+# [ON_START 恢复] 整行匹配 (因为 tag "ON_START 恢复" 含空格, 不被主正则覆盖)
+_STARTUP_LINE_RE = re.compile(
+    r"\[(?P<event_ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] "
+    r"\[(?P<symbol>[A-Za-z0-9_]+)\] \[ON_START 恢复\] "
+    r"own_pos=(?P<own_pos>-?\d+)\s+avg=(?P<avg>[\d.]+)\s+peak=(?P<peak>[\d.]+)"
+)
+
+
+def parse_startup_states(log_path: str) -> dict[str, dict]:
+    """从 strategy log 抽每个品种 [ON_START 恢复] 的 own_pos / avg_price / peak_price.
+
+    用于孤儿 takeover 时区分:
+      - strategy 启动时 own_pos > 0 → 真接管 (用 avg_price 当入场价)
+      - strategy 启动时 own_pos = 0 → broker 异常 (此笔与 strategy 无关)
+
+    Returns: {symbol_root: {"own_pos": int, "avg_price": float, "peak_price": float, "ts": datetime}}
+    """
+    out: dict[str, dict] = {}
+    with open(log_path, encoding="utf-8", errors="replace") as fp:
+        for line in fp:
+            m = _STARTUP_LINE_RE.search(line)
+            if not m:
+                continue
+            sym = m.group("symbol").upper()
+            if sym in out:
+                continue   # 取每品种首次启动 (当日交易日开盘)
+            try:
+                ts = datetime.strptime(m.group("event_ts"), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            out[sym] = {
+                "own_pos": int(m.group("own_pos")),
+                "avg_price": float(m.group("avg")),
+                "peak_price": float(m.group("peak")),
+                "ts": ts,
+            }
+    return out
+
 
 def parse_pos_decision(body: str) -> dict | None:
     m = _POS_DECISION_RE.search(body)
