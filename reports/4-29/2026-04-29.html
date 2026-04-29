@@ -68,6 +68,12 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 .summary-list { padding-left: 20px; margin: 4px 0; font-size: 12.8px;
                 line-height: 1.8; }
 .summary-list li { margin: 3px 0; }
+.swing-tag { display: inline-block; padding: 1px 7px; border-radius: 3px;
+             font-size: 10.5px; background: #e7f1fb; color: #0b5cad;
+             border: 1px solid #c4dcf3; margin-left: 6px; font-weight: 500; }
+.trend-tag { display: inline-block; padding: 1px 7px; border-radius: 3px;
+             font-size: 10.5px; background: #f3e8fb; color: #6a1b9a;
+             border: 1px solid #ddc1f0; margin-left: 6px; font-weight: 500; }
 @media print {
   body { padding: 16px; }
   .section { page-break-inside: avoid; }
@@ -314,18 +320,18 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 
   
 <div class="section">
-  <h2>HC <span class="muted" style="font-size:14px;font-weight:400;">(热轧卷板2610 hc2610)</span></h2>
+  <h2>HC <span class="muted" style="font-size:14px;font-weight:400;">(热轧卷板2610 hc2610)</span><span class="swing-tag">波段单</span></h2>
   <div class="chart-box"><img src="HC.jpg" alt="HC 盘面" /></div>
   <h3>今日行情速览</h3>
   <p>当日 <b>HC</b> 主力合约整体<b>上涨 +0.83%</b> — 窗口起点 ¥3374.0, 最高 ¥3402.0, 最低 ¥3374.0, 收盘 ¥3402.0 (波动幅度 0.83%).</p><p>收盘指标: ADX=33.1 (强趋势, 阈值 22), PDI=28.2 &gt; MDI=15.5 (多头主导); Donchian 通道 3355.0 ~ 3426.0, 中轨 3390.5.</p>
   <h3>本策略动作</h3>
-  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-28 14:15 买入 4 手 @ ¥3379.0 (来自前一交易日的持仓, state.json 跨日恢复)</p><p><b>平仓时间</b>: 22:00:02 · 卖出 4 手 @ ¥3374.0</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 −¥240.00, 逐笔 −¥980.00, 手续费 ¥13.54</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 14:15:05 · 买入 4 手 @ ¥3403.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V8 Donchian+ADX)</b>: close=3402.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=33.1 (阈值 22), PDI=28.2 &gt; MDI=15.5 — 趋势确认 ✓</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 4 手 @ ¥3403.0 过夜.</p></div>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-28 14:15:05 买入 4 手 @ ¥3379.0 <span class="muted">(state.json 自昨日恢复 own_pos)</span></p><p><b>当时仓位决策</b>: 原始信号 raw=5.00 → Carver vol target 算出 5 手 (ATR=13.2) → 目标 4 手, 当时已持 0 手.</p><p><b>当时信号 (V8 Donchian+ADX)</b>: close=3379.0, Donchian 上轨=3426.0, 中轨=3369.5; ADX=44.8, PDI=21.1 &gt; MDI=19.1 — 趋势确认 ✓</p><p><b>平仓时间</b>: 22:00:02 · 卖出 4 手 @ ¥3374.0</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 −¥240.00, 逐笔 −¥980.00, 手续费 ¥13.54</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 14:15:05 · 买入 4 手 @ ¥3403.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V8 Donchian+ADX)</b>: close=3402.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=33.1 (阈值 22), PDI=28.2 &gt; MDI=15.5 — 趋势确认 ✓</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 4 手 @ ¥3403.0 过夜.</p></div>
   <h3>今日总结</h3>
   <ul class="summary-list"><li>已平仓 <b>1</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>1</b> 笔.</li><li>broker 平仓盈亏: <b class="neg">−¥240.00</b>; 手续费: ¥27.20; 净 (broker − 手续费): <b class="neg">−¥267.20</b>.</li><li>持仓过夜: 4 手 @ ¥3403.0 (14:15 开仓).</li></ul>
 </div>
 
 <div class="section">
-  <h2>JM <span class="muted" style="font-size:14px;font-weight:400;">(焦煤2609 jm2609)</span></h2>
+  <h2>JM <span class="muted" style="font-size:14px;font-weight:400;">(焦煤2609 jm2609)</span><span class="swing-tag">波段单</span></h2>
   <div class="chart-box"><img src="JM.jpg" alt="JM 盘面" /></div>
   <h3>今日行情速览</h3>
   <p>当日 <b>JM</b> 主力合约整体<b>上涨 +1.71%</b> — 窗口起点 ¥1255.0, 最高 ¥1276.5, 最低 ¥1255.0, 收盘 ¥1276.5 (波动幅度 1.71%).</p><p>收盘指标: MFI=56.6 (资金流入强, 阈值 50); Donchian 通道 1210.0 ~ 1292.5, 中轨 1251.2.</p>
@@ -336,7 +342,7 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 </div>
 
 <div class="section">
-  <h2>P <span class="muted" style="font-size:14px;font-weight:400;">(棕榈油2609 p2609)</span></h2>
+  <h2>P <span class="muted" style="font-size:14px;font-weight:400;">(棕榈油2609 p2609)</span><span class="swing-tag">波段单</span></h2>
   <div class="chart-box"><img src="P.jpg" alt="P 盘面" /></div>
   <h3>今日行情速览</h3>
   <p>当日 <b>P</b> 主力合约整体<b>上涨 +0.34%</b> — 窗口起点 ¥9692.0, 最高 ¥9725.0, 最低 ¥9692.0, 收盘 ¥9725.0 (波动幅度 0.34%).</p><p>收盘指标: MFI=42.5 (资金流出, 阈值 50); Donchian 通道 9200.0 ~ 9900.0, 中轨 9550.0.</p>
@@ -347,7 +353,7 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 </div>
 
 <div class="section">
-  <h2>PP <span class="muted" style="font-size:14px;font-weight:400;">(聚丙烯2609 pp2609)</span></h2>
+  <h2>PP <span class="muted" style="font-size:14px;font-weight:400;">(聚丙烯2609 pp2609)</span><span class="swing-tag">波段单</span></h2>
   <div class="chart-box"><img src="PP.jpg" alt="PP 盘面" /></div>
   <h3>今日行情速览</h3>
   <p>当日 <b>PP</b> 主力合约整体<b>上涨 +0.40%</b> — 窗口起点 ¥8718.0, 最高 ¥8753.0, 最低 ¥8711.0, 收盘 ¥8753.0 (波动幅度 0.48%).</p><p>收盘指标: MFI=83.1 (资金流入强, 阈值 50); Donchian 通道 8116.0 ~ 8809.0, 中轨 8462.5.</p>
@@ -359,7 +365,7 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 
 
   <div class="footer">
-    生成时间 2026-04-29 16:57:14
+    生成时间 2026-04-29 18:01:08
     　|　工具:tools/daily_report
      · 数据源: broker CSV (主) + StraLog (上下文)
   </div>

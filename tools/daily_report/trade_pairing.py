@@ -449,6 +449,7 @@ def pair_from_csv(
     csv_trades: list[CsvTrade],
     log_events: Iterable[LogEvent] | None = None,
     prev_carryover: dict[str, dict] | None = None,
+    prev_log_events: Iterable[LogEvent] | None = None,
 ) -> list[RoundTrip]:
     """从 broker CSV 配对 round-trips.
 
@@ -473,18 +474,28 @@ def pair_from_csv(
     round_trips: list[RoundTrip] = []
 
     # 用前日 carryover 预填队列 (隔夜接管的真实入场)
+    # prev_log_events 可选: 给 carryover legs 注入前日决策上下文 (raw/IND/forecast)
+    prev_log_index = (
+        _build_log_index(prev_log_events) if prev_log_events else {}
+    )
     if prev_carryover:
         for inst, info in prev_carryover.items():
             sym_root = info.get("symbol_root", inst.upper())
             full_name = info.get("full_name", "")
             for px, lots, ts in info.get("long", []):
-                long_q[inst].append(_make_carryover_leg(
+                leg = _make_carryover_leg(
                     sym_root, inst, full_name, "buy", px, lots, ts
-                ))
+                )
+                if prev_log_index:
+                    _attach_log_context(leg, prev_log_index)
+                long_q[inst].append(leg)
             for px, lots, ts in info.get("short", []):
-                short_q[inst].append(_make_carryover_leg(
+                leg = _make_carryover_leg(
                     sym_root, inst, full_name, "sell", px, lots, ts
-                ))
+                )
+                if prev_log_index:
+                    _attach_log_context(leg, prev_log_index)
+                short_q[inst].append(leg)
 
     # 只配对成交 (跳过完全撤单)
     fills = [t for t in csv_trades if t.is_filled and t.fill_lots > 0]

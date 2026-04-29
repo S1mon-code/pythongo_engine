@@ -183,6 +183,12 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 .summary-list { padding-left: 20px; margin: 4px 0; font-size: 12.8px;
                 line-height: 1.8; }
 .summary-list li { margin: 3px 0; }
+.swing-tag { display: inline-block; padding: 1px 7px; border-radius: 3px;
+             font-size: 10.5px; background: #e7f1fb; color: #0b5cad;
+             border: 1px solid #c4dcf3; margin-left: 6px; font-weight: 500; }
+.trend-tag { display: inline-block; padding: 1px 7px; border-radius: 3px;
+             font-size: 10.5px; background: #f3e8fb; color: #6a1b9a;
+             border: 1px solid #ddc1f0; margin-left: 6px; font-weight: 500; }
 @media print {
   body { padding: 16px; }
   .section { page-break-inside: avoid; }
@@ -235,6 +241,35 @@ def _fmt_price(p: float) -> str:
 
 def _h(s: str) -> str:
     return html.escape(s, quote=False)
+
+
+# 策略类型映射 (2026-04-29 起): swing=波段单, trend=趋势单
+# 当前所有 7 个 V8/V13 + 4 个 QExp 都是波段单, ICT v6 (未来上线) 将是趋势单.
+# 修改: 在此 dict 里加映射即可.
+_STRATEGY_TYPES: dict[str, str] = {
+    # V8 (Donchian + ADX)
+    "AL": "swing", "CU": "swing", "HC": "swing",
+    # V13 (Donchian + MFI)
+    "AG": "swing", "JM": "swing", "P": "swing", "PP": "swing",
+    # QExp robust (M5/M15/M30 binary fires)
+    "AG_MOM": "swing", "AG_VSV2": "swing",
+    "I_PULL": "swing", "HC_S": "swing",
+    # ICT v6 (future: trend) — 当前 swing 占位
+    "I": "swing",
+}
+
+
+def _strategy_type(symbol: str) -> str:
+    """返回策略类型: 'swing' (波段单) | 'trend' (趋势单). 未知品种默认 swing."""
+    return _STRATEGY_TYPES.get(symbol.upper(), "swing")
+
+
+def _strategy_type_tag(symbol: str) -> str:
+    """渲染策略类型小标签 HTML."""
+    t = _strategy_type(symbol)
+    if t == "trend":
+        return '<span class="trend-tag">趋势单</span>'
+    return '<span class="swing-tag">波段单</span>'
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +647,7 @@ def _render_symbol_section(
     title_html = _h(symbol)
     if full_name:
         title_html += f' <span class="muted" style="font-size:14px;font-weight:400;">({_h(full_name)} {_h(instrument_id)})</span>'
+    title_html += _strategy_type_tag(symbol)
 
     image_html = (
         f'<div class="chart-box"><img src="{_h(image_filename)}" alt="{_h(symbol)} 盘面" /></div>'
@@ -742,12 +778,7 @@ def _render_strategy_actions(trips: list[RoundTrip], spec: ContractSpec) -> str:
         if rt.is_takeover:
             # 区分 "有真实入场价" (carryover, 来自前日 CSV) vs "无入场" (孤儿)
             if rt.entry.fill_price > 0:
-                prev_ts_str = rt.entry.ts.strftime("%m-%d %H:%M")
-                parts.append(
-                    f'<p><b>开仓 (前日接管)</b>: '
-                    f'{prev_ts_str} 买入 {rt.lots} 手 @ ¥{rt.entry.fill_price:.1f} '
-                    f'(来自前一交易日的持仓, state.json 跨日恢复)</p>'
-                )
+                parts.append(_describe_carryover_open(rt.entry, rt.lots, rt.direction))
             else:
                 parts.append('<p><b>开仓</b>: 隔夜接管的持仓 — 入场价不可见 '
                              '(前日 CSV 缺失, state.json 自昨日恢复 own_pos)</p>')
@@ -771,6 +802,55 @@ def _action_title(rt: RoundTrip) -> str:
     if rt.exit is None:
         return f"{side} {rt.lots} 手 (新开, 持仓中)"
     return f"{side} {rt.lots} 手 (开 → 平 完整 round-trip)"
+
+
+def _describe_carryover_open(leg: TradeLeg, lots: int, direction: str) -> str:
+    """前日接管开仓叙述 — 含真实入场价 + 决策上下文 (从前日 StraLog 注入)."""
+    d = leg.decision or {}
+    ind = leg.ind or {}
+    side_text = "买入" if direction == "long" else "卖出"
+    prev_ts_str = leg.ts.strftime("%m-%d %H:%M:%S")
+
+    lines = [
+        f'<p><b>开仓 (前日接管)</b>: {prev_ts_str} {side_text} '
+        f'{lots} 手 @ ¥{leg.fill_price:.1f} '
+        f'<span class="muted">(state.json 自昨日恢复 own_pos)</span></p>'
+    ]
+
+    # 决策理由 (前日 StraLog 注入的 POS_DECISION)
+    if d.get("raw") is not None:
+        lines.append(
+            f'<p><b>当时仓位决策</b>: 原始信号 raw={d["raw"]:.2f} '
+            f'→ Carver vol target 算出 {d["optimal"]} 手 '
+            f'(ATR={d.get("atr", 0):.1f}) → 目标 {d["target"]} 手, '
+            f'当时已持 {d["own_pos"]} 手.</p>'
+        )
+
+    # 信号详情
+    if ind.get("kind") == "v8":
+        adx = ind.get("adx", 0)
+        pdi = ind.get("pdi", 0)
+        mdi = ind.get("mdi", 0)
+        signal_strong = "✓" if adx >= 22 and pdi > mdi else "△"
+        lines.append(
+            f'<p><b>当时信号 (V8 Donchian+ADX)</b>: '
+            f'close={ind["close"]:.1f}, Donchian 上轨={ind["dc_u"]:.1f}, '
+            f'中轨={ind["dc_m"]:.1f}; '
+            f'ADX={adx:.1f}, PDI={pdi:.1f} '
+            f'{"&gt;" if pdi > mdi else "&lt;"} MDI={mdi:.1f} '
+            f'— 趋势确认 {signal_strong}</p>'
+        )
+    elif ind.get("kind") == "v13":
+        mfi = ind.get("mfi", 0)
+        signal_strong = "✓" if mfi >= 50 else "△"
+        lines.append(
+            f'<p><b>当时信号 (V13 Donchian+MFI)</b>: '
+            f'close={ind["close"]:.1f}, Donchian 上轨={ind["dc_u"]:.1f}, '
+            f'中轨={ind["dc_m"]:.1f}; '
+            f'MFI={mfi:.1f} — 资金确认 {signal_strong}</p>'
+        )
+
+    return "".join(lines)
 
 
 def _describe_open_leg(leg: TradeLeg, lots: int, direction: str) -> str:

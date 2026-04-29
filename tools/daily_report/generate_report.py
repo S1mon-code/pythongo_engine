@@ -242,8 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
         _, cancelled_orders = split_filled_and_cancelled(csv_trades)
 
-        # 自动找前一日 CSV 推 carryover 持仓 (隔夜接管时显示真实入场价)
+        # 自动找前一日 CSV 推 carryover 持仓 + 前日 StraLog 注入决策上下文
         prev_carryover: dict[str, dict] = {}
+        prev_events: list = []
         if data_dir is not None:
             prev_dir = _find_prev_data_dir(data_dir)
             if prev_dir is not None:
@@ -257,10 +258,19 @@ def main(argv: list[str] | None = None) -> int:
                             print(f"[INFO] 前日持仓接管 (来自 {prev_dir.name}): {insts}")
                     except (OSError, ValueError) as e:
                         print(f"[WARN] 前日 CSV 读取失败: {e}", file=sys.stderr)
+                # 前日 StraLog (给 carryover 注入开仓决策上下文)
+                try:
+                    prev_log = _autoselect_log(prev_dir)
+                    prev_events = list(parse_log(str(prev_log)))
+                    if prev_carryover:
+                        print(f"[INFO] 前日 log: {prev_log.name} ({len(prev_events)} 条事件)")
+                except (FileNotFoundError, OSError):
+                    pass
 
         trips = pair_from_csv(
             csv_trades, log_events=events_in_window,
             prev_carryover=prev_carryover or None,
+            prev_log_events=prev_events or None,
         )
         print(f"[INFO] CSV 行数: {len(csv_trades)} (撤单 {len(cancelled_orders)})")
     else:
