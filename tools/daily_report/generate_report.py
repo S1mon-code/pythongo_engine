@@ -26,7 +26,11 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "tools.daily_report"
 
-from tools.daily_report.csv_parser import parse_csv, split_filled_and_cancelled
+from tools.daily_report.csv_parser import (
+    compute_carryover,
+    parse_csv,
+    split_filled_and_cancelled,
+)
 from tools.daily_report.log_parser import parse_log
 from tools.daily_report.pivot_extractor import extract_pivot
 from tools.daily_report.render_html import render_report
@@ -60,6 +64,21 @@ def _autoselect_csv(data_dir: Path) -> Path | None:
         reverse=True,
     )
     return candidates[0] if candidates else None
+
+
+def _find_prev_data_dir(current_dir: Path) -> Path | None:
+    """找前一交易日的报告目录 (按目录名 lexicographic 排序, 取 < 当前的最新).
+
+    e.g. reports/4-29 → reports/4-28; reports/5-1 → reports/4-30 (字符串排序需注意).
+    """
+    if not current_dir.parent.exists():
+        return None
+    candidates = sorted(
+        d for d in current_dir.parent.iterdir()
+        if d.is_dir() and d.name != current_dir.name and not d.name.startswith(".")
+    )
+    prev = [d for d in candidates if d.name < current_dir.name]
+    return prev[-1] if prev else None
 
 
 _CHROME_PATHS = (
@@ -222,7 +241,27 @@ def main(argv: list[str] | None = None) -> int:
             t for t in csv_trades if win.contains(t.fill_ts or t.send_ts)
         ]
         _, cancelled_orders = split_filled_and_cancelled(csv_trades)
-        trips = pair_from_csv(csv_trades, log_events=events_in_window)
+
+        # 自动找前一日 CSV 推 carryover 持仓 (隔夜接管时显示真实入场价)
+        prev_carryover: dict[str, dict] = {}
+        if data_dir is not None:
+            prev_dir = _find_prev_data_dir(data_dir)
+            if prev_dir is not None:
+                prev_csv = _autoselect_csv(prev_dir)
+                if prev_csv is not None:
+                    try:
+                        prev_trades = parse_csv(prev_csv)
+                        prev_carryover = compute_carryover(prev_trades)
+                        if prev_carryover:
+                            insts = list(prev_carryover.keys())
+                            print(f"[INFO] 前日持仓接管 (来自 {prev_dir.name}): {insts}")
+                    except (OSError, ValueError) as e:
+                        print(f"[WARN] 前日 CSV 读取失败: {e}", file=sys.stderr)
+
+        trips = pair_from_csv(
+            csv_trades, log_events=events_in_window,
+            prev_carryover=prev_carryover or None,
+        )
         print(f"[INFO] CSV 行数: {len(csv_trades)} (撤单 {len(cancelled_orders)})")
     else:
         print("[INFO] 未找到 CSV, 走 log 流程 (旧版)")

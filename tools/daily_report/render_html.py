@@ -740,8 +740,17 @@ def _render_strategy_actions(trips: list[RoundTrip], spec: ContractSpec) -> str:
 
         # 开仓段
         if rt.is_takeover:
-            parts.append('<p><b>开仓</b>: 隔夜接管的持仓 — 当日开仓不在窗口内 '
-                         '(state.json 自昨日恢复 own_pos)</p>')
+            # 区分 "有真实入场价" (carryover, 来自前日 CSV) vs "无入场" (孤儿)
+            if rt.entry.fill_price > 0:
+                prev_ts_str = rt.entry.ts.strftime("%m-%d %H:%M")
+                parts.append(
+                    f'<p><b>开仓 (前日接管)</b>: '
+                    f'{prev_ts_str} 买入 {rt.lots} 手 @ ¥{rt.entry.fill_price:.1f} '
+                    f'(来自前一交易日的持仓, state.json 跨日恢复)</p>'
+                )
+            else:
+                parts.append('<p><b>开仓</b>: 隔夜接管的持仓 — 入场价不可见 '
+                             '(前日 CSV 缺失, state.json 自昨日恢复 own_pos)</p>')
         else:
             parts.append(_describe_open_leg(rt.entry, rt.lots, rt.direction))
 

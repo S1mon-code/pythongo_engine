@@ -338,6 +338,7 @@ def _close_fifo(
         out.append(RoundTrip(
             symbol_root=head.symbol_root, direction=direction, lots=take,
             entry=entry_part, exit=exit_part, multiplier=spec.multiplier,
+            is_takeover=head.is_takeover,  # carryover 入场也标 takeover (有真实入场价)
         ))
         if take == head.lots:
             queue.popleft()
@@ -447,14 +448,22 @@ def _build_log_index(events: Iterable[LogEvent]) -> dict[str, list[LogEvent]]:
 def pair_from_csv(
     csv_trades: list[CsvTrade],
     log_events: Iterable[LogEvent] | None = None,
+    prev_carryover: dict[str, dict] | None = None,
 ) -> list[RoundTrip]:
     """从 broker CSV 配对 round-trips.
 
+    Args:
+        csv_trades: 当日 CSV 解析结果
+        log_events: 可选, 用于注入决策上下文 (POS_DECISION/EXECUTE/IND/SIGNAL/TRAIL_STOP)
+        prev_carryover: 可选, 前一交易日末仓持仓 (来自 csv_parser.compute_carryover).
+                        Schema: {inst_id: {"long": [(price, lots, ts)], "short": [...],
+                                            "symbol_root": str, "full_name": str}}
+                        提供后, 隔夜平仓能正确显示前日入场价 (而非 "—")
+
     与 pair_trades (log 版) 的区别:
       - 使用 broker 报回的真实成交 (含手续费 / broker_pnl / 逐笔 pnl)
-      - 处理隔夜接管的孤儿平仓 (today close, no today open) → is_takeover RoundTrip
+      - 隔夜接管的平仓: 优先用 prev_carryover 配对 (有真实开仓价); 没 prev → 标 is_takeover
       - 撤单不进 round_trips (调用方单独处理)
-      - log_events 仅用于注入决策上下文 (POS_DECISION / EXECUTE / IND / SIGNAL / TRAIL_STOP)
     """
     log_index = _build_log_index(log_events) if log_events else {}
 
@@ -462,6 +471,20 @@ def pair_from_csv(
     long_q: dict[str, deque[TradeLeg]] = defaultdict(deque)
     short_q: dict[str, deque[TradeLeg]] = defaultdict(deque)
     round_trips: list[RoundTrip] = []
+
+    # 用前日 carryover 预填队列 (隔夜接管的真实入场)
+    if prev_carryover:
+        for inst, info in prev_carryover.items():
+            sym_root = info.get("symbol_root", inst.upper())
+            full_name = info.get("full_name", "")
+            for px, lots, ts in info.get("long", []):
+                long_q[inst].append(_make_carryover_leg(
+                    sym_root, inst, full_name, "buy", px, lots, ts
+                ))
+            for px, lots, ts in info.get("short", []):
+                short_q[inst].append(_make_carryover_leg(
+                    sym_root, inst, full_name, "sell", px, lots, ts
+                ))
 
     # 只配对成交 (跳过完全撤单)
     fills = [t for t in csv_trades if t.is_filled and t.fill_lots > 0]
@@ -525,3 +548,22 @@ def _root_from_inst(instrument_id: str) -> str:
     import re as _re
     m = _re.match(r"^([A-Za-z]+)", instrument_id.strip())
     return m.group(1).upper() if m else instrument_id.upper()
+
+
+def _make_carryover_leg(
+    sym_root: str, inst: str, full_name: str,
+    side: str, fill_price: float, lots: int, ts: datetime,
+) -> TradeLeg:
+    """构造一个"前日接管"的 entry leg — 标 is_takeover=True 但保留真实入场价.
+
+    与"完全找不到入场"的 placeholder (fill_price=0) 不同, 这里有真实数据.
+    """
+    return TradeLeg(
+        ts=ts, symbol_root=sym_root,
+        instrument_id=inst,
+        side=side, offset="0", lots=lots,
+        fill_price=fill_price,
+        send_price=None, oid=-1, is_open=True,
+        is_takeover=True,
+        full_name=full_name,
+    )

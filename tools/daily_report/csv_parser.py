@@ -348,3 +348,59 @@ def split_filled_and_cancelled(
     filled = [t for t in trades if t.is_filled]
     cancelled = [t for t in trades if t.is_cancelled and not t.is_filled]
     return filled, cancelled
+
+
+def compute_carryover(trades: list[CsvTrade]) -> dict[str, dict]:
+    """从一日 CSV 推过夜持仓 (FIFO 配对后剩在队列里的).
+
+    Returns:
+        {instrument_id: {"long": [(fill_price, lots, fill_ts)],
+                         "short": [...],
+                         "symbol_root": str,
+                         "full_name": str}}
+
+    用于第二日报告的 takeover 入场价填充: 前一日持仓过夜的开仓价 ≠ "0", 而是 fill_price.
+    """
+    from collections import deque
+
+    long_q: dict[str, deque] = {}
+    short_q: dict[str, deque] = {}
+    meta: dict[str, dict] = {}      # {inst_id: {symbol_root, full_name}}
+
+    fills = [t for t in trades if t.is_filled and t.fill_lots > 0]
+    fills.sort(key=lambda t: t.fill_ts or t.send_ts)
+
+    for t in fills:
+        inst = t.instrument_id
+        meta[inst] = {"symbol_root": t.symbol_root, "full_name": t.full_name}
+        ts = t.fill_ts or t.send_ts
+        if t.offset == "0":  # 开仓
+            (long_q if t.side == "buy" else short_q).setdefault(
+                inst, deque()
+            ).append((t.fill_price, t.fill_lots, ts))
+        else:  # 平仓 — FIFO 取对应方向
+            queue = long_q.get(inst) if t.side == "sell" else short_q.get(inst)
+            if not queue:
+                continue
+            remaining = t.fill_lots
+            while remaining > 0 and queue:
+                px, lots, _ts = queue[0]
+                take = min(lots, remaining)
+                if take == lots:
+                    queue.popleft()
+                else:
+                    queue[0] = (px, lots - take, _ts)
+                remaining -= take
+
+    out: dict[str, dict] = {}
+    for inst in set(list(long_q.keys()) + list(short_q.keys())):
+        long_legs = list(long_q.get(inst, []))
+        short_legs = list(short_q.get(inst, []))
+        if not long_legs and not short_legs:
+            continue
+        out[inst] = {
+            "long": long_legs,
+            "short": short_legs,
+            **meta.get(inst, {"symbol_root": inst.upper(), "full_name": ""}),
+        }
+    return out
