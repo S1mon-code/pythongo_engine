@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<title>实盘交易日报 2026-04-29</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px 40px; background: #ffffff; color: #1a1a1a;
+       font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+                    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+       line-height: 1.55; font-size: 13px; }
+.wrap { max-width: 1280px; margin: 0 auto; }
+h1 { color: #1a1a1a; font-size: 22px; margin: 0 0 4px 0; font-weight: 600;
+     letter-spacing: -0.2px; }
+h2 { color: #1a1a1a; font-size: 15px; margin: 28px 0 10px 0;
+     padding-bottom: 6px; border-bottom: 1px solid #1a1a1a;
+     font-weight: 600; letter-spacing: 0.2px; }
+h3 { color: #555; font-size: 12px; margin: 18px 0 6px 0; font-weight: 600;
+     text-transform: uppercase; letter-spacing: 0.5px; }
+.subtitle { color: #777; font-size: 12px; margin-bottom: 20px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+         gap: 0; margin: 12px 0 8px 0; border: 1px solid #d0d0d0; }
+.card { padding: 14px 18px; border-right: 1px solid #d0d0d0; }
+.card:last-child { border-right: none; }
+.card .label { font-size: 11px; color: #666; margin-bottom: 6px;
+                text-transform: uppercase; letter-spacing: 0.3px; }
+.card .value { font-size: 20px; font-weight: 600; color: #1a1a1a;
+                font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px;
+        margin: 0 0 8px 0; }
+th { text-align: left; padding: 8px 10px; background: transparent;
+     border-bottom: 1px solid #1a1a1a; color: #1a1a1a; font-weight: 600;
+     font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+td { padding: 7px 10px; border-bottom: 1px solid #eeeeee; color: #1a1a1a; }
+tr:last-child td { border-bottom: 1px solid #d0d0d0; }
+.num { text-align: right; font-variant-numeric: tabular-nums;
+       font-family: 'SF Mono', Menlo, Consolas, monospace; }
+.neg { color: #b10000; }
+.dim { color: #999; }
+.section { padding: 0; margin-bottom: 24px; }
+.chart-box { margin: 8px 0 14px 0; border: 1px solid #e0e0e0; padding: 4px;
+              background: #fafafa; }
+.chart-box img { display: block; max-width: 100%; height: auto; }
+.pivot-box { background: #fafafa; border: 1px solid #e0e0e0;
+             padding: 12px 16px; margin: 8px 0 12px 0; font-size: 12.5px; }
+.pivot-box .formula { font-family: 'SF Mono', Menlo, Consolas, monospace;
+                       font-size: 12px; color: #1a1a1a; padding: 4px 0;
+                       white-space: pre-wrap; }
+.pivot-box .conds { color: #1a1a1a; font-size: 12.5px; padding-left: 20px;
+                     margin: 2px 0 6px 0; }
+.pivot-box .conds li { margin: 2px 0; }
+.pivot-box .label { font-size: 11px; color: #666; margin-top: 10px;
+                     font-weight: 600; text-transform: uppercase;
+                     letter-spacing: 0.3px; }
+.pivot-box hr { border: 0; border-top: 1px solid #e0e0e0; margin: 10px 0; }
+.muted { color: #999; font-size: 11px; }
+.footer { color: #999; font-size: 11px; text-align: left; margin-top: 32px;
+          padding-top: 12px; border-top: 1px solid #e0e0e0; }
+.strategy-meta { color: #555; font-size: 11.5px; margin-top: 2px; }
+.takeover-tag { display: inline-block; padding: 1px 6px; border-radius: 3px;
+                font-size: 10.5px; background: #fff4e6; color: #b35900;
+                border: 1px solid #ffd99e; }
+.action-block { background: #fafafa; border: 1px solid #e0e0e0;
+                padding: 12px 16px; margin: 10px 0; border-radius: 2px; }
+.action-block p { margin: 6px 0; line-height: 1.7; font-size: 12.8px; }
+.action-title { font-weight: 600; color: #1a1a1a; font-size: 13.5px;
+                margin-bottom: 8px; padding-bottom: 6px;
+                border-bottom: 1px solid #e0e0e0; }
+.summary-list { padding-left: 20px; margin: 4px 0; font-size: 12.8px;
+                line-height: 1.8; }
+.summary-list li { margin: 3px 0; }
+@media print {
+  body { padding: 16px; }
+  .section { page-break-inside: avoid; }
+}
+</style>
+</head><body>
+<div class="wrap">
+  <h1>PythonGO 实盘交易日报</h1>
+  <div class="subtitle">
+    交易日:<b>2026-04-29</b>　|
+    时间窗口:2026-04-28 21:00 → 2026-04-29 15:00
+    　|　日志文件:StraLog(8).txt  | <b>broker CSV:实时回报(信息导出)_2026_04_29-15_57_35(1).csv</b>
+  </div>
+
+  <h2>当日汇总</h2>
+  
+<div class="cards">
+  <div class="card">
+    <div class="label">净盈亏 (broker − 手续费)</div>
+    <div class="value ">¥1,982.77</div>
+  </div>
+  <div class="card">
+    <div class="label">broker 平仓盈亏</div>
+    <div class="value ">¥2,110.00</div>
+  </div>
+  <div class="card">
+    <div class="label">逐笔盈亏 (本笔成本)</div>
+    <div class="value ">¥815.00</div>
+  </div>
+  <div class="card">
+    <div class="label">手续费</div>
+    <div class="value ">¥127.23</div>
+  </div>
+  <div class="card">
+    <div class="label">已平仓 / 持有中</div>
+    <div class="value">9 / 2<span class='muted'> (含接管 2)</span><span class='muted'> · 撤单 2</span></div>
+  </div>
+  <div class="card">
+    <div class="label">交易品种</div>
+    <div class="value">HC, JM, P, PP</div>
+  </div>
+</div>
+
+
+  <h2>所有交易明细(按时间排序)</h2>
+  
+<table>
+  <thead>
+<tr>
+  <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
+  <th class="num">入场价</th><th class="num">出场价</th>
+  <th class="num">broker盈亏</th><th class="num">逐笔盈亏</th>
+  <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
+</tr></thead>
+  <tbody>
+<tr>
+  <td>04-28 22:00:01</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,691.0</td>
+  <td class="num">9,715.0</td>
+  <td class="num neg">−¥370.00</td>
+  <td class="num neg">−¥450.00</td>
+  <td class="num">¥5.04</td>
+  <td class="num neg"><b>−¥375.04</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 22:00:02</td>
+  <td><b>HC</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">3,374.0</td>
+  <td class="num neg">−¥240.00</td>
+  <td class="num neg">−¥980.00</td>
+  <td class="num">¥13.54</td>
+  <td class="num neg"><b>−¥253.54</b></td>
+  <td><span class="takeover-tag">隔夜接管</span></td>
+</tr>
+
+<tr>
+  <td>04-28 22:00:06</td>
+  <td><b>PP</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">8,723.0</td>
+  <td class="num">8,727.0</td>
+  <td class="num ">¥1,475.00</td>
+  <td class="num ">¥2,240.00</td>
+  <td class="num">¥8.10</td>
+  <td class="num "><b>¥1,466.90</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-28 22:49:59</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num">9,691.0</td>
+  <td class="num neg">−¥610.00</td>
+  <td class="num neg">−¥100.00</td>
+  <td class="num">¥2.52</td>
+  <td class="num neg"><b>−¥612.52</b></td>
+  <td><span class="takeover-tag">隔夜接管</span></td>
+</tr>
+
+<tr>
+  <td>04-29 09:00:55</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,676.0</td>
+  <td class="num">9,739.0</td>
+  <td class="num ">¥175.00</td>
+  <td class="num ">¥200.00</td>
+  <td class="num">¥5.04</td>
+  <td class="num "><b>¥169.97</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-29 10:00:03</td>
+  <td><b>JM</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">1,267.5</td>
+  <td class="num">1,269.0</td>
+  <td class="num ">¥270.00</td>
+  <td class="num neg">−¥690.00</td>
+  <td class="num">¥15.25</td>
+  <td class="num "><b>¥254.75</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-29 11:15:00</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,724.0</td>
+  <td class="num">9,739.0</td>
+  <td class="num ">¥175.00</td>
+  <td class="num ">¥200.00</td>
+  <td class="num">¥5.03</td>
+  <td class="num "><b>¥169.97</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-29 11:15:00</td>
+  <td><b>P</b></td>
+  <td>多</td>
+  <td class="num">1</td>
+  <td class="num">9,724.0</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num dim">—</td>
+  <td class="num dim">—</td>
+  <td class="num">¥5.03</td>
+  <td class="num "><b>¥0.00</b></td>
+  <td>持有中</td>
+</tr>
+
+<tr>
+  <td>04-29 11:15:05</td>
+  <td><b>PP</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">8,710.0</td>
+  <td class="num">8,732.0</td>
+  <td class="num ">¥245.00</td>
+  <td class="num ">¥245.00</td>
+  <td class="num">¥8.10</td>
+  <td class="num "><b>¥236.90</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-29 14:15:05</td>
+  <td><b>JM</b></td>
+  <td>多</td>
+  <td class="num">3</td>
+  <td class="num">1,276.0</td>
+  <td class="num">1,271.0</td>
+  <td class="num ">¥990.00</td>
+  <td class="num ">¥150.00</td>
+  <td class="num">¥45.93</td>
+  <td class="num "><b>¥944.07</b></td>
+  <td>已平仓</td>
+</tr>
+
+<tr>
+  <td>04-29 14:15:05</td>
+  <td><b>HC</b></td>
+  <td>多</td>
+  <td class="num">4</td>
+  <td class="num">3,403.0</td>
+  <td class="num"><span class="dim">—</span></td>
+  <td class="num dim">—</td>
+  <td class="num dim">—</td>
+  <td class="num">¥13.66</td>
+  <td class="num "><b>¥0.00</b></td>
+  <td>持有中</td>
+</tr>
+</tbody>
+</table>
+
+
+  
+<h2>当日撤单 (2 笔)</h2>
+<p class="muted">通常由 OrderMonitor escalator 触发: 挂单超时未成 → 撤单 → 重发新价位.</p>
+<table>
+  <thead><tr>
+    <th>报单时间</th><th>品种</th><th>方向</th><th>开平</th>
+    <th class="num">报价</th><th class="num">手数</th><th>状态</th>
+  </tr></thead>
+  <tbody>
+<tr>
+  <td>04-28 22:00:01</td>
+  <td><b>PP</b></td>
+  <td>买</td>
+  <td>开仓</td>
+  <td class="num">8,718.0</td>
+  <td class="num">4</td>
+  <td class="muted">撤单</td>
+</tr>
+
+<tr>
+  <td>04-29 14:15:00</td>
+  <td><b>HC</b></td>
+  <td>买</td>
+  <td>开仓</td>
+  <td class="num">3,401.0</td>
+  <td class="num">4</td>
+  <td class="muted">撤单</td>
+</tr>
+</tbody>
+</table>
+
+
+  
+<div class="section">
+  <h2>HC <span class="muted" style="font-size:14px;font-weight:400;">(热轧卷板2610 hc2610)</span></h2>
+  <div class="chart-box"><img src="HC.jpg" alt="HC 盘面" /></div>
+  <h3>今日行情速览</h3>
+  <p>当日 <b>HC</b> 主力合约整体<b>上涨 +0.83%</b> — 窗口起点 ¥3374.0, 最高 ¥3402.0, 最低 ¥3374.0, 收盘 ¥3402.0 (波动幅度 0.83%).</p><p>收盘指标: ADX=33.1 (强趋势, 阈值 22), PDI=28.2 &gt; MDI=15.5 (多头主导); Donchian 通道 3355.0 ~ 3426.0, 中轨 3390.5.</p>
+  <h3>本策略动作</h3>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (隔夜接管 → 平仓)</div><p><b>开仓</b>: 隔夜接管的持仓 — 当日开仓不在窗口内 (state.json 自昨日恢复 own_pos)</p><p><b>平仓时间</b>: 22:00:02 · 卖出 4 手 @ ¥3374.0</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 −¥240.00, 逐笔 −¥980.00, 手续费 ¥13.54</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 14:15:05 · 买入 4 手 @ ¥3403.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V8 Donchian+ADX)</b>: close=3402.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=33.1 (阈值 22), PDI=28.2 &gt; MDI=15.5 — 趋势确认 ✓</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 4 手 @ ¥3403.0 过夜.</p></div>
+  <h3>今日总结</h3>
+  <ul class="summary-list"><li>已平仓 <b>1</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>1</b> 笔.</li><li>broker 平仓盈亏: <b class="neg">−¥240.00</b>; 手续费: ¥27.20; 净 (broker − 手续费): <b class="neg">−¥267.20</b>.</li><li>持仓过夜: 4 手 @ ¥3403.0 (14:15 开仓).</li></ul>
+</div>
+
+<div class="section">
+  <h2>JM <span class="muted" style="font-size:14px;font-weight:400;">(焦煤2609 jm2609)</span></h2>
+  <div class="chart-box"><img src="JM.jpg" alt="JM 盘面" /></div>
+  <h3>今日行情速览</h3>
+  <p>当日 <b>JM</b> 主力合约整体<b>上涨 +1.71%</b> — 窗口起点 ¥1255.0, 最高 ¥1276.5, 最低 ¥1255.0, 收盘 ¥1276.5 (波动幅度 1.71%).</p><p>收盘指标: MFI=56.6 (资金流入强, 阈值 50); Donchian 通道 1210.0 ~ 1292.5, 中轨 1251.2.</p>
+  <h3>本策略动作</h3>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 10:00:03 · 买入 1 手 @ ¥1267.5</p><p><b>仓位决策</b>: 原始信号强度 raw=1.91 → Carver vol target 算出 2 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 1 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1267.5, Donchian 上轨=1292.5, 中轨=1251.2; MFI=50.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 10:33:59 · 卖出 1 手 @ ¥1269.0 (报价 ¥1266.5, 滑点 -5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥270.00) 与当日 round-trip 的毛盈亏 (¥90.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 ¥270.00, 逐笔 −¥690.00, 手续费 ¥15.25</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 3 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 14:15:05 · 买入 3 手 @ ¥1276.0</p><p><b>仓位决策</b>: 原始信号强度 raw=3.53 → Carver vol target 算出 4 手 (ATR=11.6, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1276.5, Donchian 上轨=1292.5, 中轨=1251.2; MFI=56.6 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 14:25:59 · 卖出 3 手 @ ¥1271.0 (报价 ¥1268.5, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥1269.0 ≤ 移损线 ¥1269.2 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥990.00, 逐笔 ¥150.00, 手续费 ¥45.93</p></div>
+  <h3>今日总结</h3>
+  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥1,260.00</b>; 手续费: ¥61.18; 净 (broker − 手续费): <b class="">¥1,198.82</b>.</li></ul>
+</div>
+
+<div class="section">
+  <h2>P <span class="muted" style="font-size:14px;font-weight:400;">(棕榈油2609 p2609)</span></h2>
+  <div class="chart-box"><img src="P.jpg" alt="P 盘面" /></div>
+  <h3>今日行情速览</h3>
+  <p>当日 <b>P</b> 主力合约整体<b>上涨 +0.34%</b> — 窗口起点 ¥9692.0, 最高 ¥9725.0, 最低 ¥9692.0, 收盘 ¥9725.0 (波动幅度 0.34%).</p><p>收盘指标: MFI=42.5 (资金流出, 阈值 50); Donchian 通道 9200.0 ~ 9900.0, 中轨 9550.0.</p>
+  <h3>本策略动作</h3>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:01 · 买入 1 手 @ ¥9691.0</p><p><b>仓位决策</b>: 原始信号强度 raw=2.09 → Carver vol target 算出 2 手 (ATR=67.4, 资金 ¥1,000,000) → apply_buffer 后目标 1 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9692.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=45.2 (阈值 50) — 资金确认 △</p><p><b>平仓时间</b>: 22:16:29 · 卖出 1 手 @ ¥9715.0</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (−¥370.00) 与当日 round-trip 的毛盈亏 (¥240.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 −¥370.00, 逐笔 −¥450.00, 手续费 ¥5.04</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 1 手 (隔夜接管 → 平仓)</div><p><b>开仓</b>: 隔夜接管的持仓 — 当日开仓不在窗口内 (state.json 自昨日恢复 own_pos)</p><p><b>平仓时间</b>: 22:49:59 · 卖出 1 手 @ ¥9691.0 (报价 ¥9681.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 −¥610.00, 逐笔 −¥100.00, 手续费 ¥2.52</p></div><div class="action-block"><div class="action-title">动作 #3: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 09:00:55 · 买入 1 手 @ ¥9676.0 (报价 ¥9677.0, 滑 -0.5 跳)</p><p><b>仓位决策</b>: 原始信号强度 raw=2.09 → Carver vol target 算出 2 手 (ATR=67.4, 资金 ¥1,000,000) → apply_buffer 后目标 1 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9692.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=45.2 (阈值 50) — 资金确认 △</p><p><b>平仓时间</b>: 13:43:59 · 卖出 1 手 @ ¥9739.0 (报价 ¥9729.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9691.0 ≤ 移损线 ¥9692.8 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥175.00, 逐笔 ¥200.00, 手续费 ¥5.04</p></div><div class="action-block"><div class="action-title">动作 #4: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:00 · 买入 1 手 @ ¥9724.0</p><p><b>仓位决策</b>: 原始信号强度 raw=2.61 → Carver vol target 算出 3 手 (ATR=66.4, 资金 ¥1,000,000) → apply_buffer 后目标 2 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9725.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=42.5 (阈值 50) — 资金确认 △</p><p><b>平仓时间</b>: 13:43:59 · 卖出 1 手 @ ¥9739.0 (报价 ¥9729.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9691.0 ≤ 移损线 ¥9692.8 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥175.00, 逐笔 ¥200.00, 手续费 ¥5.03</p></div><div class="action-block"><div class="action-title">动作 #5: 做多 1 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 11:15:00 · 买入 1 手 @ ¥9724.0</p><p><b>仓位决策</b>: 原始信号强度 raw=2.61 → Carver vol target 算出 3 手 (ATR=66.4, 资金 ¥1,000,000) → apply_buffer 后目标 2 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9725.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=42.5 (阈值 50) — 资金确认 △</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 1 手 @ ¥9724.0 过夜.</p></div>
+  <h3>今日总结</h3>
+  <ul class="summary-list"><li>已平仓 <b>4</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>1</b> 笔.</li><li>broker 平仓盈亏: <b class="neg">−¥630.00</b>; 手续费: ¥22.66; 净 (broker − 手续费): <b class="neg">−¥652.65</b>.</li><li>持仓过夜: 1 手 @ ¥9724.0 (11:15 开仓).</li></ul>
+</div>
+
+<div class="section">
+  <h2>PP <span class="muted" style="font-size:14px;font-weight:400;">(聚丙烯2609 pp2609)</span></h2>
+  <div class="chart-box"><img src="PP.jpg" alt="PP 盘面" /></div>
+  <h3>今日行情速览</h3>
+  <p>当日 <b>PP</b> 主力合约整体<b>上涨 +0.40%</b> — 窗口起点 ¥8718.0, 最高 ¥8753.0, 最低 ¥8711.0, 收盘 ¥8753.0 (波动幅度 0.48%).</p><p>收盘指标: MFI=83.1 (资金流入强, 阈值 50); Donchian 通道 8116.0 ~ 8809.0, 中轨 8462.5.</p>
+  <h3>本策略动作</h3>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 4 手 @ ¥8723.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=68.7, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8718.0, Donchian 上轨=8758.0, 中轨=8437.0; MFI=88.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 09:00:29 · 卖出 4 手 @ ¥8727.0 (报价 ¥8722.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥1,475.00) 与当日 round-trip 的毛盈亏 (¥80.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 ¥1,475.00, 逐笔 ¥2,240.00, 手续费 ¥8.10</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:05 · 买入 4 手 @ ¥8710.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=69.3, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8711.0, Donchian 上轨=8809.0, 中轨=8462.5; MFI=83.9 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 14:21:59 · 卖出 4 手 @ ¥8732.0 (报价 ¥8727.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥8729.0 ≤ 移损线 ¥8732.7 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥245.00, 逐笔 ¥245.00, 手续费 ¥8.10</p></div>
+  <h3>今日总结</h3>
+  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥1,720.00</b>; 手续费: ¥16.20; 净 (broker − 手续费): <b class="">¥1,703.80</b>.</li></ul>
+</div>
+
+
+  <div class="footer">
+    生成时间 2026-04-29 16:32:23
+    　|　工具:tools/daily_report
+     · 数据源: broker CSV (主) + StraLog (上下文)
+  </div>
+</div>
+</body></html>

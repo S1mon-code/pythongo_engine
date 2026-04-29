@@ -253,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         sym_images=sym_images,
         cancelled=cancelled_orders,
         csv_path=str(csv_path) if csv_path else None,
+        log_events=events_in_window,
     )
     out_path.write_text(html_text, encoding="utf-8")
     print(f"[OK] HTML 已生成: {out_path}")

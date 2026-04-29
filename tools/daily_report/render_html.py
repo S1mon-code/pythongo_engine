@@ -15,6 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .csv_parser import CsvTrade
+from .log_parser import LogEvent, parse_ind
 from .pivot_extractor import PivotSpec
 from .specs import ContractSpec, get_spec
 from .trade_pairing import RoundTrip, TradeLeg
@@ -173,6 +174,15 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 .takeover-tag { display: inline-block; padding: 1px 6px; border-radius: 3px;
                 font-size: 10.5px; background: #fff4e6; color: #b35900;
                 border: 1px solid #ffd99e; }
+.action-block { background: #fafafa; border: 1px solid #e0e0e0;
+                padding: 12px 16px; margin: 10px 0; border-radius: 2px; }
+.action-block p { margin: 6px 0; line-height: 1.7; font-size: 12.8px; }
+.action-title { font-weight: 600; color: #1a1a1a; font-size: 13.5px;
+                margin-bottom: 8px; padding-bottom: 6px;
+                border-bottom: 1px solid #e0e0e0; }
+.summary-list { padding-left: 20px; margin: 4px 0; font-size: 12.8px;
+                line-height: 1.8; }
+.summary-list li { margin: 3px 0; }
 @media print {
   body { padding: 16px; }
   .section { page-break-inside: avoid; }
@@ -589,41 +599,355 @@ def _render_symbol_section(
     trips: list[RoundTrip],
     pivot: PivotSpec | None,
     image_filename: str | None,
+    sym_events: list[LogEvent] | None = None,
 ) -> str:
+    """新版 (2026-04-29+): 品种点评 — 配图 + 行情速览 + 本策略动作 + 今日总结.
+
+    去掉旧版的 pivot box / 入场前置条件 / 移动止损公式 / 开仓原因表 / 平仓原因表 /
+    本品种交易明细表. 改成中文叙述风格.
+    """
     spec = get_spec(symbol)
-    pivot_html = (
-        _render_pivot_box(pivot) if pivot else
-        '<p class="muted">未找到该品种的策略源文件。</p>'
-    )
+    full_name = _full_name_from_trips(trips)
+    instrument_id = _instrument_from_trips(trips)
+    title_html = _h(symbol)
+    if full_name:
+        title_html += f' <span class="muted" style="font-size:14px;font-weight:400;">({_h(full_name)} {_h(instrument_id)})</span>'
+
     image_html = (
         f'<div class="chart-box"><img src="{_h(image_filename)}" alt="{_h(symbol)} 盘面" /></div>'
         if image_filename else ""
     )
 
     if not trips:
-        # 有图但无交易 — 简洁版面
         return f"""
 <div class="section">
-  <h2>{_h(symbol)} <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = {spec.multiplier:g}　|　最小变动价位 = {spec.tick_size:g}</span></h2>
+  <h2>{title_html}</h2>
   {image_html}
-  {pivot_html}
-  <p class="muted">本日窗口内无开仓/平仓事件。</p>
+  <p class="muted">本日窗口内无交易动作。</p>
 </div>
 """
 
+    market_html = _render_market_overview(symbol, sym_events or [], trips)
+    actions_html = _render_strategy_actions(trips, spec)
+    summary_html = _render_symbol_summary(trips, spec)
+
     return f"""
 <div class="section">
-  <h2>{_h(symbol)} <span class="muted" style="font-size:14px;font-weight:400;">合约乘数 = {spec.multiplier:g}　|　最小变动价位 = {spec.tick_size:g}</span></h2>
+  <h2>{title_html}</h2>
   {image_html}
-  {pivot_html}
-  <h3>开仓原因</h3>
-  {_render_entry_table(trips)}
-  <h3>平仓原因</h3>
-  {_render_exit_table(trips)}
-  <h3>本品种交易明细</h3>
-  {_render_symbol_pnl_table(trips, spec)}
+  <h3>今日行情速览</h3>
+  {market_html}
+  <h3>本策略动作</h3>
+  {actions_html}
+  <h3>今日总结</h3>
+  {summary_html}
 </div>
 """
+
+
+def _full_name_from_trips(trips: list[RoundTrip]) -> str:
+    for rt in trips:
+        if rt.entry.full_name:
+            return rt.entry.full_name
+        if rt.exit and rt.exit.full_name:
+            return rt.exit.full_name
+    return ""
+
+
+def _instrument_from_trips(trips: list[RoundTrip]) -> str:
+    for rt in trips:
+        if rt.entry.instrument_id:
+            return rt.entry.instrument_id
+        if rt.exit and rt.exit.instrument_id:
+            return rt.exit.instrument_id
+    return ""
+
+
+def _render_market_overview(
+    symbol: str, sym_events: list[LogEvent], trips: list[RoundTrip]
+) -> str:
+    """从 IND log 序列 + trades 推今日行情走势.
+
+    IND log 由策略每根 bar close 时打印一次, 含 close + 关键指标 (V8: ADX/PDI/MDI;
+    V13: MFI). 我们用 IND 序列的 close 推开盘/最高/最低/收盘 + 涨跌幅.
+    """
+    inds: list[dict] = []
+    for ev in sym_events:
+        if ev.tag != "IND":
+            continue
+        d = parse_ind(ev.body)
+        if d:
+            d["_ts"] = ev.event_ts
+            inds.append(d)
+
+    if not inds:
+        # fallback: 从 trades 估开盘 / 收盘
+        trades_sorted = sorted(trips, key=lambda r: r.entry.ts)
+        first = trades_sorted[0].entry
+        last = trades_sorted[-1].exit or trades_sorted[-1].entry
+        first_px = first.fill_price or 0
+        last_px = last.fill_price or 0
+        if first_px and last_px:
+            pct = (last_px - first_px) / first_px * 100
+            return (f"<p>(IND 数据不足, 仅基于成交价推断) 首笔成交 ¥{first_px:.1f}, "
+                    f"末笔成交 ¥{last_px:.1f}, 区间变化 {pct:+.2f}%.</p>")
+        return "<p class='muted'>(行情数据不足)</p>"
+
+    closes = [d["close"] for d in inds]
+    first_close = closes[0]
+    last_close = closes[-1]
+    hi = max(closes)
+    lo = min(closes)
+    pct = (last_close - first_close) / first_close * 100 if first_close else 0
+    direction = "上涨" if pct > 0.05 else ("下跌" if pct < -0.05 else "横盘")
+
+    last = inds[-1]
+    parts = [
+        f'<p>当日 <b>{_h(symbol)}</b> 主力合约整体<b>{direction} {pct:+.2f}%</b> — ',
+        f'窗口起点 ¥{first_close:.1f}, ',
+        f'最高 ¥{hi:.1f}, 最低 ¥{lo:.1f}, ',
+        f'收盘 ¥{last_close:.1f} (波动幅度 {(hi - lo)/first_close*100:.2f}%).</p>'
+    ]
+
+    # 关键指标 (收盘视角)
+    if last.get("kind") == "v8":
+        adx_judge = ("强趋势" if last["adx"] >= 22 else "趋势弱")
+        pdi_mdi_judge = ("多头主导" if last["pdi"] > last["mdi"] else "空头主导")
+        parts.append(
+            f'<p>收盘指标: ADX={last["adx"]:.1f} ({adx_judge}, 阈值 22), '
+            f'PDI={last["pdi"]:.1f} {"&gt;" if last["pdi"] > last["mdi"] else "&lt;"} '
+            f'MDI={last["mdi"]:.1f} ({pdi_mdi_judge}); '
+            f'Donchian 通道 {last["dc_l"]:.1f} ~ {last["dc_u"]:.1f}, '
+            f'中轨 {last["dc_m"]:.1f}.</p>'
+        )
+    elif last.get("kind") == "v13":
+        mfi_judge = ("资金流入强" if last["mfi"] >= 50 else "资金流出")
+        parts.append(
+            f'<p>收盘指标: MFI={last["mfi"]:.1f} ({mfi_judge}, 阈值 50); '
+            f'Donchian 通道 {last["dc_l"]:.1f} ~ {last["dc_u"]:.1f}, '
+            f'中轨 {last["dc_m"]:.1f}.</p>'
+        )
+    return "".join(parts)
+
+
+def _render_strategy_actions(trips: list[RoundTrip], spec: ContractSpec) -> str:
+    """逐笔叙述 — 按时间排序, 每个 round-trip 一段中文."""
+    parts: list[str] = []
+    trips_sorted = sorted(trips, key=lambda r: r.entry.ts)
+    for idx, rt in enumerate(trips_sorted, 1):
+        parts.append(f'<div class="action-block">')
+        parts.append(f'<div class="action-title">动作 #{idx}: {_action_title(rt)}</div>')
+
+        # 开仓段
+        if rt.is_takeover:
+            parts.append('<p><b>开仓</b>: 隔夜接管的持仓 — 当日开仓不在窗口内 '
+                         '(state.json 自昨日恢复 own_pos)</p>')
+        else:
+            parts.append(_describe_open_leg(rt.entry, rt.lots, rt.direction))
+
+        # 平仓段 / 持仓段
+        if rt.exit is not None:
+            parts.append(_describe_close_leg(rt.exit, rt.entry, rt, spec))
+        else:
+            parts.append(f'<p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 '
+                         f'{rt.lots} 手 @ ¥{rt.entry.fill_price:.1f} 过夜.</p>')
+        parts.append('</div>')
+    return "".join(parts)
+
+
+def _action_title(rt: RoundTrip) -> str:
+    side = "做多" if rt.direction == "long" else "做空"
+    if rt.is_takeover:
+        return f"{side} {rt.lots} 手 (隔夜接管 → 平仓)"
+    if rt.exit is None:
+        return f"{side} {rt.lots} 手 (新开, 持仓中)"
+    return f"{side} {rt.lots} 手 (开 → 平 完整 round-trip)"
+
+
+def _describe_open_leg(leg: TradeLeg, lots: int, direction: str) -> str:
+    """开仓中文叙述."""
+    d = leg.decision or {}
+    ind = leg.ind or {}
+    ex = leg.execute or {}
+
+    side_text = "买入" if direction == "long" else "卖出"
+    lines = [
+        f'<p><b>开仓时间</b>: {leg.ts.strftime("%H:%M:%S")} · '
+        f'{side_text} {lots} 手 @ ¥{leg.fill_price:.1f}'
+    ]
+    if leg.send_price and abs(leg.send_price - leg.fill_price) >= 0.01:
+        diff_ticks = (leg.fill_price - leg.send_price) / get_spec(leg.symbol_root).tick_size
+        diff_sign = "+" if diff_ticks > 0 else ""
+        lines.append(f' (报价 ¥{leg.send_price:.1f}, 滑 {diff_sign}{diff_ticks:.1f} 跳)')
+    lines.append("</p>")
+
+    # 仓位决策逻辑
+    if d.get("raw") is not None:
+        lines.append(
+            f'<p><b>仓位决策</b>: 原始信号强度 raw={d["raw"]:.2f} '
+            f'→ Carver vol target 算出 {d["optimal"]} 手 '
+            f'(ATR={d.get("atr", 0):.1f}, 资金 ¥{d.get("capital", 0):,.0f}) '
+            f'→ apply_buffer 后目标 {d["target"]} 手, 当时已持 {d["own_pos"]} 手.</p>'
+        )
+
+    # 信号详情 (V8 / V13)
+    if ind.get("kind") == "v8":
+        adx = ind.get("adx", 0)
+        pdi = ind.get("pdi", 0)
+        mdi = ind.get("mdi", 0)
+        signal_strong = "✓" if adx >= 22 and pdi > mdi else "△"
+        lines.append(
+            f'<p><b>信号详情 (V8 Donchian+ADX)</b>: '
+            f'close={ind["close"]:.1f}, Donchian 上轨={ind["dc_u"]:.1f}, '
+            f'中轨={ind["dc_m"]:.1f}; '
+            f'ADX={adx:.1f} (阈值 22), '
+            f'PDI={pdi:.1f} {"&gt;" if pdi > mdi else "&lt;"} MDI={mdi:.1f} '
+            f'— 趋势确认 {signal_strong}</p>'
+        )
+    elif ind.get("kind") == "v13":
+        mfi = ind.get("mfi", 0)
+        signal_strong = "✓" if mfi >= 50 else "△"
+        lines.append(
+            f'<p><b>信号详情 (V13 Donchian+MFI)</b>: '
+            f'close={ind["close"]:.1f}, Donchian 上轨={ind["dc_u"]:.1f}, '
+            f'中轨={ind["dc_m"]:.1f}; '
+            f'MFI={mfi:.1f} (阈值 50) — 资金确认 {signal_strong}</p>'
+        )
+
+    # 不显示 "开仓动作" (内容已在仓位决策里, 避免重复)
+    return "".join(lines)
+
+
+def _describe_close_leg(
+    exit_leg: TradeLeg, entry_leg: TradeLeg, rt: RoundTrip, spec: ContractSpec
+) -> str:
+    """平仓中文叙述."""
+    ts = exit_leg.trail_stop or {}
+    ex = exit_leg.execute or {}
+    d = exit_leg.decision or {}
+    action = (ex.get("action") or "").upper()
+
+    side_text = "卖出" if rt.direction == "long" else "买入"
+
+    lines = [
+        f'<p><b>平仓时间</b>: {exit_leg.ts.strftime("%H:%M:%S")} · '
+        f'{side_text} {exit_leg.lots} 手 @ ¥{exit_leg.fill_price:.1f}'
+    ]
+    if exit_leg.send_price and abs(exit_leg.send_price - exit_leg.fill_price) >= 0.01:
+        diff_ticks = (exit_leg.fill_price - exit_leg.send_price) / spec.tick_size
+        # 卖单有利 = fill > send, 买单有利 = fill < send
+        adv = -diff_ticks if rt.direction == "long" else diff_ticks
+        adv_sign = "+" if adv > 0 else ""
+        lines.append(f' (报价 ¥{exit_leg.send_price:.1f}, 滑点 {adv_sign}{adv:.1f} 跳)')
+    lines.append("</p>")
+
+    # 触发原因
+    trigger_html = ""
+    if rt.is_takeover:
+        trigger_html = (
+            '<p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — '
+            '可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.'
+        )
+        if action == "TRAIL_STOP":
+            trigger_html += " 实际触发: 移动止损."
+        elif action == "HARD_STOP":
+            trigger_html += " 实际触发: 硬止损."
+        trigger_html += "</p>"
+    elif ts:
+        trigger_html = (
+            f'<p><b>触发条件</b>: 移动止损 — 当前价 ¥{ts.get("close", 0):.1f} '
+            f'≤ 移损线 ¥{ts.get("line", 0):.1f} '
+            f'(peak × (1 - trailing_pct%) 公式生成)</p>'
+        )
+    elif action == "TRAIL_STOP":
+        trigger_html = f'<p><b>触发条件</b>: 移动止损 — {_h(ex.get("reason", ""))}</p>'
+    elif action == "HARD_STOP":
+        trigger_html = (
+            f'<p><b>触发条件</b>: 硬止损 — '
+            f'价格回撤超过开仓价 ×{0.5}% (默认), {_h(ex.get("reason", ""))}</p>'
+        )
+    elif action == "PROFIT_TARGET":
+        trigger_html = f'<p><b>触发条件</b>: ATR 止盈 — {_h(ex.get("reason", ""))}</p>'
+    elif d.get("target") == 0 and (d.get("optimal") or 0) <= 0:
+        raw = d.get("raw")
+        raw_str = f"{raw:.2f}" if raw is not None else "—"
+        trigger_html = (
+            f'<p><b>触发条件</b>: 信号反转 — 原始信号 raw={raw_str} '
+            f'→ optimal={d.get("optimal")} → target=0, 强制平仓.</p>'
+        )
+    # 注意: 不 fallback 到 ex.reason — 因为时间最近的 EXECUTE 可能是开仓那个,
+    # 真正的平仓触发在 EXEC_STOP / TRAIL_STOP log 里 (action 字段已捕获到上面 if 中)
+    if not trigger_html:
+        # 启发式: broker_pnl 与当日 round-trip 的 gross 偏离很大时, 可能是 takeover
+        gross_estimate = 0.0
+        if not rt.is_takeover and entry_leg.fill_price and exit_leg.fill_price:
+            gross_estimate = (
+                (exit_leg.fill_price - entry_leg.fill_price)
+                * exit_leg.lots * spec.multiplier
+                * (1 if rt.direction == "long" else -1)
+            )
+        if (exit_leg.broker_pnl is not None and gross_estimate
+                and abs(exit_leg.broker_pnl - gross_estimate) > abs(gross_estimate) * 0.5
+                and abs(exit_leg.broker_pnl - gross_estimate) > 100):
+            trigger_html = (
+                '<p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). '
+                f'broker 平仓盈亏 ({_money_signed(exit_leg.broker_pnl)}) 与当日 '
+                f'round-trip 的毛盈亏 ({_money_signed(gross_estimate)}) 差异较大, '
+                '可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p>'
+            )
+        else:
+            trigger_html = (
+                '<p><b>触发条件</b>: (策略 log 未打印明确 EXEC_STOP / TRAIL_STOP / '
+                '信号反转 tag, 可能是手动平仓 / 接管平仓)</p>'
+            )
+    lines.append(trigger_html)
+
+    # 盈亏
+    pnl_parts = []
+    if exit_leg.broker_pnl is not None:
+        pnl_parts.append(f"broker 平仓盈亏 {_money_signed(exit_leg.broker_pnl)}")
+    if exit_leg.per_trade_pnl is not None:
+        pnl_parts.append(f"逐笔 {_money_signed(exit_leg.per_trade_pnl)}")
+    fee_total = (entry_leg.fee or 0.0) + (exit_leg.fee or 0.0)
+    if fee_total:
+        pnl_parts.append(f"手续费 ¥{fee_total:.2f}")
+    if pnl_parts:
+        lines.append(f'<p><b>盈亏</b>: {", ".join(pnl_parts)}</p>')
+
+    return "".join(lines)
+
+
+def _render_symbol_summary(trips: list[RoundTrip], spec: ContractSpec) -> str:
+    """单品种的当日小结."""
+    closed = [r for r in trips if not r.is_open]
+    open_ = [r for r in trips if r.is_open]
+    takeover = [r for r in trips if r.is_takeover]
+
+    broker_total = sum(
+        (r.exit.broker_pnl or 0.0) for r in closed if r.exit
+    )
+    fee_total = sum(
+        (r.entry.fee or 0.0) + ((r.exit.fee if r.exit else 0.0) or 0.0) for r in trips
+    )
+    has_broker = any(r.exit and r.exit.broker_pnl is not None for r in closed)
+
+    parts = ['<ul class="summary-list">']
+    parts.append(f'<li>已平仓 <b>{len(closed)}</b> 笔'
+                 + (f' (含 {len(takeover)} 笔隔夜接管)' if takeover else '')
+                 + f', 持仓中 <b>{len(open_)}</b> 笔.</li>')
+    if has_broker:
+        sign_class = _money_class(broker_total)
+        parts.append(f'<li>broker 平仓盈亏: <b class="{sign_class}">'
+                     f'{_money_signed(broker_total)}</b>; '
+                     f'手续费: ¥{fee_total:.2f}; '
+                     f'净 (broker − 手续费): <b class="{_money_class(broker_total - fee_total)}">'
+                     f'{_money_signed(broker_total - fee_total)}</b>.</li>')
+    if open_:
+        held = open_[0]
+        parts.append(f'<li>持仓过夜: {held.lots} 手 @ ¥{held.entry.fill_price:.1f} '
+                     f'({held.entry.ts.strftime("%H:%M")} 开仓).</li>')
+    parts.append('</ul>')
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +967,7 @@ def render_report(
     sym_images: dict[str, str] | None = None,
     cancelled: list[CsvTrade] | None = None,
     csv_path: str | None = None,
+    log_events: list[LogEvent] | None = None,
 ) -> str:
     cancelled = cancelled or []
     summary = _aggregate(trips, target_date, win_start, win_end,
@@ -652,12 +977,20 @@ def render_report(
     for rt in trips:
         by_symbol[rt.symbol_root].append(rt)
 
+    # 按 symbol 分组 log events (用于 narrative)
+    events_by_symbol: dict[str, list[LogEvent]] = defaultdict(list)
+    for ev in (log_events or []):
+        events_by_symbol[ev.symbol.upper()].append(ev)
+
     if symbols is None:
         symbols = sorted(by_symbol.keys())
     images = sym_images or {}
 
     sym_sections = "".join(
-        _render_symbol_section(sym, by_symbol.get(sym, []), pivots.get(sym), images.get(sym))
+        _render_symbol_section(
+            sym, by_symbol.get(sym, []), pivots.get(sym), images.get(sym),
+            sym_events=events_by_symbol.get(sym),
+        )
         for sym in sorted(symbols)
     )
 
