@@ -390,21 +390,19 @@ def _render_master_table(
         exit_px = _fmt_price(x.fill_price) if x else '<span class="dim">—</span>'
 
         # 主指标: gross (策略 FIFO 配对) + slip - fee = 净盈亏
-        # broker_pnl 作对照列 (含隔夜价差, 不反映策略实际操作)
+        # 列结构: 毛盈亏 / 滑点 / 手续费 / 净盈亏 / broker对照 (灰)
+        slip_pnl = rt.slippage_pnl(spec)
         if has_broker:
             broker_pnl = (x.broker_pnl if x and x.broker_pnl is not None else None)
             fee = (e.fee or 0.0) + ((x.fee if x else 0.0) or 0.0)
-            slip_pnl = rt.slippage_pnl(spec)
 
-            # 毛盈亏 (策略 FIFO 出-入) 列
             gross_disp = (_money_signed(gross) if not rt.is_open
                           else '<span class="dim">—</span>')
-            broker_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
+            gross_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
 
-            # broker 盯市对照列
-            per_html = (f'<td class="num {_money_class(broker_pnl)} dim" '
-                        f'style="font-size:11.5px;">{_money_signed(broker_pnl)}</td>'
-                        if broker_pnl is not None else '<td class="num dim">—</td>')
+            slip_disp = (_money_signed(slip_pnl) if not rt.is_open
+                         else '<span class="dim">—</span>')
+            slip_html = f'<td class="num {_money_class(slip_pnl)}">{slip_disp}</td>'
 
             fee_html = (f'<td class="num">¥{fee:.2f}</td>' if fee else '<td class="num dim">—</td>')
 
@@ -413,13 +411,21 @@ def _render_master_table(
             net_disp = (_money_signed(net) if not rt.is_open
                         else '<span class="dim">—</span>')
             net_html = f'<td class="num {_money_class(net)}"><b>{net_disp}</b></td>'
+
+            # broker 盯市对照列 (灰字, 仅参考)
+            broker_disp = _money_signed(broker_pnl) if broker_pnl is not None else "—"
+            broker_class = _money_class(broker_pnl) if broker_pnl is not None else "dim"
+            broker_html = (f'<td class="num {broker_class}" '
+                           f'style="font-size:11px; color:#999;">{broker_disp}</td>')
         else:
-            net = gross + slip
+            net = gross + slip_pnl
             gross_disp = _money_signed(gross) if not rt.is_open else '<span class="dim">—</span>'
-            broker_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
-            per_html = f'<td class="num {_money_class(slip)}">{_h(_slip_with_ticks(rt, spec))}</td>'
+            gross_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
+            slip_disp = _money_signed(slip_pnl) if not rt.is_open else '<span class="dim">—</span>'
+            slip_html = f'<td class="num {_money_class(slip_pnl)}">{slip_disp}</td>'
             fee_html = ''
             net_html = f'<td class="num {_money_class(net)}"><b>{_money_signed(net)}</b></td>'
+            broker_html = ''
 
         rows.append(f"""
 <tr>
@@ -429,10 +435,11 @@ def _render_master_table(
   <td class="num">{rt.lots}</td>
   <td class="num">{entry_px}</td>
   <td class="num">{exit_px}</td>
-  {broker_html}
-  {per_html}
+  {gross_html}
+  {slip_html}
   {fee_html}
   {net_html}
+  {broker_html}
   <td>{status_html}</td>
 </tr>
 """)
@@ -441,15 +448,17 @@ def _render_master_table(
 <tr>
   <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
   <th class="num">入场价</th><th class="num">出场价</th>
-  <th class="num">毛盈亏</th><th class="num">broker对照</th>
-  <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
+  <th class="num">毛盈亏</th><th class="num">滑点</th>
+  <th class="num">手续费</th><th class="num">净盈亏</th>
+  <th class="num" style="font-size:11px; color:#999;">broker对照</th>
+  <th>状态</th>
 </tr>"""
     else:
         header = """
 <tr>
   <th>开仓时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
   <th class="num">入场价</th><th class="num">出场价</th>
-  <th class="num">毛盈亏</th><th class="num">滑点损益</th>
+  <th class="num">毛盈亏</th><th class="num">滑点</th>
   <th class="num">净盈亏</th><th>状态</th>
 </tr>"""
     return f"""

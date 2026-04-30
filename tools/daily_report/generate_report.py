@@ -267,11 +267,59 @@ def main(argv: list[str] | None = None) -> int:
                 except (FileNotFoundError, OSError):
                     pass
 
+        # 解析当日 strategy 启动状态 — 用于校准 prev_carryover (避免把手动开仓 / broker 异常残留误算成 takeover)
+        try:
+            startup_states = parse_startup_states(str(log_path))
+            if startup_states:
+                print(f"[INFO] strategy 启动状态: "
+                      f"{ {k: v['own_pos'] for k, v in startup_states.items()} }")
+        except (OSError, ValueError):
+            startup_states = {}
+
+        # 用 startup state 校准: strategy 启动 own_pos=0 → 该品种 prev_carryover 全部丢弃
+        # (broker CSV 推出的过夜持仓如果在 strategy state 里没记录, 多半是底仓自动平 / 手动操作)
+        if prev_carryover and startup_states:
+            kept = {}
+            for inst, info in prev_carryover.items():
+                sym = info.get("symbol_root", "").upper()
+                strategy_pos = startup_states.get(sym, {}).get("own_pos", 0)
+                if strategy_pos > 0:
+                    kept[inst] = info
+                else:
+                    print(f"[INFO] 忽略 {inst} 前日 carryover "
+                          f"(strategy startup own_pos=0, 多半是手动 / 底仓异常)")
+            prev_carryover = kept
+
         trips = pair_from_csv(
             csv_trades, log_events=events_in_window,
             prev_carryover=prev_carryover or None,
             prev_log_events=prev_events or None,
         )
+
+        # 二次校准: 若 trip 是孤儿 takeover 且 strategy startup 该品种 own_pos=0 → 过滤掉
+        # (broker 端报了平仓但 strategy 完全没此动作, 报告里不应显示成 round-trip)
+        trips = [
+            rt for rt in trips
+            if not (rt.is_takeover
+                    and rt.entry.fill_price <= 0
+                    and startup_states.get(rt.symbol_root, {}).get("own_pos", 0) == 0)
+        ]
+
+        # 三次校准: "持有中" round-trip 若 strategy 当日全程未碰过该品种 (startup=0 且当日无策略
+        # ON_TRADE) — 多半是手动开仓, 标 broker_anomaly 过滤
+        # 简化: 只在 startup own_pos=0 且该 trip 的 entry 是当日开仓 (非 carryover) 时, 检查
+        # 该品种是否有 strategy [ON_TRADE] log. 若无则过滤.
+        sym_has_strategy_trade = {
+            ev.symbol.upper() for ev in events_in_window
+            if ev.tag == "ON_TRADE"
+        }
+        trips = [
+            rt for rt in trips
+            if not (rt.is_open
+                    and not rt.is_takeover
+                    and startup_states.get(rt.symbol_root, {}).get("own_pos", 0) == 0
+                    and rt.symbol_root not in sym_has_strategy_trade)
+        ]
         print(f"[INFO] CSV 行数: {len(csv_trades)} (撤单 {len(cancelled_orders)})")
     else:
         print("[INFO] 未找到 CSV, 走 log 流程 (旧版)")
