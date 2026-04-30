@@ -52,6 +52,8 @@ class Summary:
 def _aggregate(trips: list[RoundTrip], target_date: date,
                win_start: datetime, win_end: datetime,
                cancelled_count: int = 0) -> Summary:
+    """汇总: 主指标用 strategy FIFO 配对 (出-入)×手数×乘数 — PythonGO 真实操作口径.
+    broker_pnl 仅作对照参考 (含隔夜价差, 不反映 strategy 实际操作)."""
     gross = slip = 0.0
     broker_total = per_total = fee_total = 0.0
     symbols: set[str] = set()
@@ -66,7 +68,7 @@ def _aggregate(trips: list[RoundTrip], target_date: date,
         total_ticks_sum += abs(rt.total_slip_ticks())
         total_legs += 1 if rt.is_open else 2
 
-        # 累计 broker 真值字段 (CSV 流程)
+        # 累计 broker 字段 (作对照参考)
         if rt.entry.fee:
             fee_total += rt.entry.fee
         if rt.exit and rt.exit.fee:
@@ -77,9 +79,11 @@ def _aggregate(trips: list[RoundTrip], target_date: date,
         if rt.exit and rt.exit.per_trade_pnl is not None:
             per_total += rt.exit.per_trade_pnl
 
+        # gross 用 strategy FIFO 算 (无论 takeover 与否, 只要 entry 有真实价)
         if rt.is_takeover:
             takeover_n += 1
-            closed += 1   # takeover 也算已平仓
+            closed += 1
+            gross += rt.gross_pnl
             slip += leg_pnl
         elif rt.is_open:
             open_n += 1
@@ -88,11 +92,12 @@ def _aggregate(trips: list[RoundTrip], target_date: date,
             closed += 1
             gross += rt.gross_pnl
             slip += leg_pnl
+
     n = len(trips)
     avg_per_trip = total_ticks_sum / n if n else 0.0
     avg_per_leg = total_ticks_sum / total_legs if total_legs else 0.0
-    # 净盈亏: 有 broker 数据时用 broker 真值 - 手续费; 否则用 gross + slip
-    net = (broker_total - fee_total) if has_broker else (gross + slip)
+    # 净盈亏统一口径: gross + slip - fee (strategy 视角)
+    net = gross + slip - fee_total
     return Summary(
         target_date=target_date,
         window_start=win_start, window_end=win_end,
@@ -278,19 +283,18 @@ def _strategy_type_tag(symbol: str) -> str:
 
 
 def _render_summary(s: Summary) -> str:
+    """汇总卡片: 主指标用 strategy FIFO 算 (出-入)×手数×乘数, broker 作对照参考."""
     if s.has_broker_data:
-        # broker 真值版 (CSV 流程)
-        net_label = "净盈亏 (broker − 手续费)"
+        net_label = "净盈亏 (策略 FIFO)"
         net_val = s.net_pnl
-        col2_label = "broker 平仓盈亏"
-        col2_val = s.broker_pnl_total
-        col3_label = "逐笔盈亏 (本笔成本)"
-        col3_val = s.per_trade_pnl_total
+        col2_label = "毛盈亏 (出 − 入)"
+        col2_val = s.gross_pnl
+        col3_label = "broker 盯市 (对照)"
+        col3_val = s.broker_pnl_total
         col4_label = "手续费"
         col4_val_str = f"¥{s.fee_total:,.2f}"
         col4_class = ""
     else:
-        # 旧 log 流程
         net_label = "净盈亏"
         net_val = s.net_pnl
         col2_label = "毛盈亏"
@@ -385,18 +389,30 @@ def _render_master_table(
             entry_px = '<span class="dim">—</span>'
         exit_px = _fmt_price(x.fill_price) if x else '<span class="dim">—</span>'
 
-        # broker pnl + 逐笔 + fee
+        # 主指标: gross (策略 FIFO 配对) + slip - fee = 净盈亏
+        # broker_pnl 作对照列 (含隔夜价差, 不反映策略实际操作)
         if has_broker:
             broker_pnl = (x.broker_pnl if x and x.broker_pnl is not None else None)
-            per_pnl = (x.per_trade_pnl if x and x.per_trade_pnl is not None else None)
             fee = (e.fee or 0.0) + ((x.fee if x else 0.0) or 0.0)
-            broker_html = (f'<td class="num {_money_class(broker_pnl)}">{_money_signed(broker_pnl)}</td>'
-                           if broker_pnl is not None else '<td class="num dim">—</td>')
-            per_html = (f'<td class="num {_money_class(per_pnl)}">{_money_signed(per_pnl)}</td>'
-                        if per_pnl is not None else '<td class="num dim">—</td>')
+            slip_pnl = rt.slippage_pnl(spec)
+
+            # 毛盈亏 (策略 FIFO 出-入) 列
+            gross_disp = (_money_signed(gross) if not rt.is_open
+                          else '<span class="dim">—</span>')
+            broker_html = f'<td class="num {_money_class(gross)}">{gross_disp}</td>'
+
+            # broker 盯市对照列
+            per_html = (f'<td class="num {_money_class(broker_pnl)} dim" '
+                        f'style="font-size:11.5px;">{_money_signed(broker_pnl)}</td>'
+                        if broker_pnl is not None else '<td class="num dim">—</td>')
+
             fee_html = (f'<td class="num">¥{fee:.2f}</td>' if fee else '<td class="num dim">—</td>')
-            net = (broker_pnl or 0.0) - fee if broker_pnl is not None else (gross + slip)
-            net_html = f'<td class="num {_money_class(net)}"><b>{_money_signed(net)}</b></td>'
+
+            # 净盈亏 = gross + slip - fee (策略真值, 不依赖 broker)
+            net = (gross + slip_pnl - fee) if not rt.is_open else 0.0
+            net_disp = (_money_signed(net) if not rt.is_open
+                        else '<span class="dim">—</span>')
+            net_html = f'<td class="num {_money_class(net)}"><b>{net_disp}</b></td>'
         else:
             net = gross + slip
             gross_disp = _money_signed(gross) if not rt.is_open else '<span class="dim">—</span>'
@@ -425,7 +441,7 @@ def _render_master_table(
 <tr>
   <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
   <th class="num">入场价</th><th class="num">出场价</th>
-  <th class="num">broker盈亏</th><th class="num">逐笔盈亏</th>
+  <th class="num">毛盈亏</th><th class="num">broker对照</th>
   <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
 </tr>"""
     else:
@@ -919,9 +935,9 @@ def _describe_open_leg(leg: TradeLeg, lots: int, direction: str) -> str:
         f'{side_text} {lots} 手 @ ¥{leg.fill_price:.1f}'
     ]
     if leg.send_price and abs(leg.send_price - leg.fill_price) >= 0.01:
-        diff_ticks = (leg.fill_price - leg.send_price) / get_spec(leg.symbol_root).tick_size
-        diff_sign = "+" if diff_ticks > 0 else ""
-        lines.append(f' (报价 ¥{leg.send_price:.1f}, 滑 {diff_sign}{diff_ticks:.1f} 跳)')
+        adv = leg.slip_ticks or 0.0  # 已是 advantage 视角 (正=有利)
+        adv_sign = "+" if adv > 0 else ""
+        lines.append(f' (报价 ¥{leg.send_price:.1f}, 滑点 {adv_sign}{adv:.1f} 跳)')
     lines.append("</p>")
 
     # 仓位决策逻辑
@@ -977,9 +993,8 @@ def _describe_close_leg(
         f'{side_text} {exit_leg.lots} 手 @ ¥{exit_leg.fill_price:.1f}'
     ]
     if exit_leg.send_price and abs(exit_leg.send_price - exit_leg.fill_price) >= 0.01:
-        diff_ticks = (exit_leg.fill_price - exit_leg.send_price) / spec.tick_size
-        # 卖单有利 = fill > send, 买单有利 = fill < send
-        adv = -diff_ticks if rt.direction == "long" else diff_ticks
+        # 直接用已算好的 slip_ticks (正=有利, 负=不利)
+        adv = exit_leg.slip_ticks or 0.0
         adv_sign = "+" if adv > 0 else ""
         lines.append(f' (报价 ¥{exit_leg.send_price:.1f}, 滑点 {adv_sign}{adv:.1f} 跳)')
     lines.append("</p>")
@@ -1045,27 +1060,56 @@ def _describe_close_leg(
             )
     lines.append(trigger_html)
 
-    # 盈亏
-    pnl_parts = []
-    if exit_leg.broker_pnl is not None:
-        pnl_parts.append(f"broker 平仓盈亏 {_money_signed(exit_leg.broker_pnl)}")
-    if exit_leg.per_trade_pnl is not None:
-        pnl_parts.append(f"逐笔 {_money_signed(exit_leg.per_trade_pnl)}")
+    # 盈亏 (主: strategy FIFO; 对照: broker 盯市)
     fee_total = (entry_leg.fee or 0.0) + (exit_leg.fee or 0.0)
-    if fee_total:
-        pnl_parts.append(f"手续费 ¥{fee_total:.2f}")
-    if pnl_parts:
-        lines.append(f'<p><b>盈亏</b>: {", ".join(pnl_parts)}</p>')
+    slip_pnl = rt.slippage_pnl(spec)
+    gross = rt.gross_pnl
+    net_strategy = gross + slip_pnl - fee_total
+
+    if entry_leg.fill_price > 0:
+        # strategy FIFO 视角真值
+        formula = (
+            f'(¥{exit_leg.fill_price:.1f} − ¥{entry_leg.fill_price:.1f}) × '
+            f'{rt.lots} × {spec.multiplier:g}'
+            if rt.direction == "long" else
+            f'(¥{entry_leg.fill_price:.1f} − ¥{exit_leg.fill_price:.1f}) × '
+            f'{rt.lots} × {spec.multiplier:g}'
+        )
+        lines.append(
+            f'<p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 {formula} = '
+            f'{_money_signed(gross)}; '
+            f'滑点 {_money_signed(slip_pnl)}; '
+            f'手续费 ¥{fee_total:.2f} → '
+            f'<b>净 {_money_signed(net_strategy)}</b></p>'
+        )
+        if exit_leg.broker_pnl is not None:
+            lines.append(
+                f'<p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): '
+                f'{_money_signed(exit_leg.broker_pnl)}</p>'
+            )
+    else:
+        # 孤儿 takeover — 没真实入场, 只能用 broker
+        pnl_parts = []
+        if exit_leg.broker_pnl is not None:
+            pnl_parts.append(f"broker 平仓盈亏 {_money_signed(exit_leg.broker_pnl)}")
+        if exit_leg.per_trade_pnl is not None:
+            pnl_parts.append(f"逐笔 {_money_signed(exit_leg.per_trade_pnl)}")
+        if fee_total:
+            pnl_parts.append(f"手续费 ¥{fee_total:.2f}")
+        if pnl_parts:
+            lines.append(f'<p><b>盈亏</b>: {", ".join(pnl_parts)}</p>')
 
     return "".join(lines)
 
 
 def _render_symbol_summary(trips: list[RoundTrip], spec: ContractSpec) -> str:
-    """单品种的当日小结."""
+    """单品种的当日小结 — 主指标用 strategy FIFO 算 (出-入)×手数×乘数."""
     closed = [r for r in trips if not r.is_open]
     open_ = [r for r in trips if r.is_open]
     takeover = [r for r in trips if r.is_takeover]
 
+    gross_total = sum(r.gross_pnl for r in closed)
+    slip_total = sum(r.slippage_pnl(spec) for r in trips)
     broker_total = sum(
         (r.exit.broker_pnl or 0.0) for r in closed if r.exit
     )
@@ -1073,18 +1117,27 @@ def _render_symbol_summary(trips: list[RoundTrip], spec: ContractSpec) -> str:
         (r.entry.fee or 0.0) + ((r.exit.fee if r.exit else 0.0) or 0.0) for r in trips
     )
     has_broker = any(r.exit and r.exit.broker_pnl is not None for r in closed)
+    net_strategy = gross_total + slip_total - fee_total
 
     parts = ['<ul class="summary-list">']
     parts.append(f'<li>已平仓 <b>{len(closed)}</b> 笔'
                  + (f' (含 {len(takeover)} 笔隔夜接管)' if takeover else '')
                  + f', 持仓中 <b>{len(open_)}</b> 笔.</li>')
+    parts.append(
+        f'<li>策略 FIFO 毛盈亏 (出 − 入)×手数×乘数: '
+        f'<b class="{_money_class(gross_total)}">{_money_signed(gross_total)}</b>; '
+        f'滑点损益: <b class="{_money_class(slip_total)}">{_money_signed(slip_total)}</b>; '
+        f'手续费: ¥{fee_total:.2f}.</li>'
+    )
+    parts.append(
+        f'<li><b>净盈亏 (策略真值)</b>: '
+        f'<b class="{_money_class(net_strategy)}">{_money_signed(net_strategy)}</b>.</li>'
+    )
     if has_broker:
-        sign_class = _money_class(broker_total)
-        parts.append(f'<li>broker 平仓盈亏: <b class="{sign_class}">'
-                     f'{_money_signed(broker_total)}</b>; '
-                     f'手续费: ¥{fee_total:.2f}; '
-                     f'净 (broker − 手续费): <b class="{_money_class(broker_total - fee_total)}">'
-                     f'{_money_signed(broker_total - fee_total)}</b>.</li>')
+        parts.append(
+            f'<li>broker 盯市对照 (含隔夜价差, 仅参考): '
+            f'<span class="muted">{_money_signed(broker_total)}</span>.</li>'
+        )
     if open_:
         held = open_[0]
         parts.append(f'<li>持仓过夜: {held.lots} 手 @ ¥{held.entry.fill_price:.1f} '

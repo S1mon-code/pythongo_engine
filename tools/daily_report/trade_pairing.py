@@ -92,11 +92,18 @@ class RoundTrip:
 
     @property
     def gross_pnl(self) -> float:
-        # 隔夜接管孤儿平仓 — 没法算 gross (没有真开仓价), 用 broker_pnl 代替
-        if self.is_takeover and self.exit is not None:
-            return self.exit.broker_pnl or 0.0
+        """Strategy FIFO 配对盈亏 (PythonGO 真实操作口径).
+
+        公式: (出场价 - 入场价) × 手数 × 乘数 (long) 或反向 (short).
+        carryover takeover: entry.fill_price 来自前日 CSV (有真实价), 一样适用.
+        孤儿 takeover (entry.fill_price=0): 没法算, 兜底用 broker_pnl (但 caller
+        应通过 startup_states 重定向到 state.json avg_price).
+        """
         if self.exit is None:
             return 0.0
+        # 孤儿 takeover (无真实入场) — 兜底
+        if self.entry.fill_price <= 0:
+            return self.exit.broker_pnl or 0.0
         if self.direction == "long":
             return (self.exit.fill_price - self.entry.fill_price) * self.lots * self.multiplier
         return (self.entry.fill_price - self.exit.fill_price) * self.lots * self.multiplier

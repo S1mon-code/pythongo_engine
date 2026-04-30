@@ -92,16 +92,16 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   
 <div class="cards">
   <div class="card">
-    <div class="label">净盈亏 (broker − 手续费)</div>
-    <div class="value ">¥6,115.11</div>
+    <div class="label">净盈亏 (策略 FIFO)</div>
+    <div class="value ">¥685.11</div>
   </div>
   <div class="card">
-    <div class="label">broker 平仓盈亏</div>
+    <div class="label">毛盈亏 (出 − 入)</div>
+    <div class="value neg">−¥1,050.00</div>
+  </div>
+  <div class="card">
+    <div class="label">broker 盯市 (对照)</div>
     <div class="value ">¥6,290.00</div>
-  </div>
-  <div class="card">
-    <div class="label">逐笔盈亏 (本笔成本)</div>
-    <div class="value ">¥5,725.00</div>
   </div>
   <div class="card">
     <div class="label">手续费</div>
@@ -125,7 +125,7 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
 <tr>
   <th>时间</th><th>品种</th><th>方向</th><th class="num">手数</th>
   <th class="num">入场价</th><th class="num">出场价</th>
-  <th class="num">broker盈亏</th><th class="num">逐笔盈亏</th>
+  <th class="num">毛盈亏</th><th class="num">broker对照</th>
   <th class="num">手续费</th><th class="num">净盈亏</th><th>状态</th>
 </tr></thead>
   <tbody>
@@ -136,10 +136,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">1</td>
   <td class="num">9,724.0<span class="muted" style="font-size:10px;"> (前日)</span></td>
   <td class="num">9,785.0</td>
-  <td class="num ">¥600.00</td>
-  <td class="num ">¥770.00</td>
+  <td class="num ">¥610.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥600.00</td>
   <td class="num">¥2.52</td>
-  <td class="num "><b>¥597.48</b></td>
+  <td class="num "><b>¥707.48</b></td>
   <td><span class="takeover-tag">隔夜接管</span></td>
 </tr>
 
@@ -150,10 +150,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">4</td>
   <td class="num">3,403.0<span class="muted" style="font-size:10px;"> (前日)</span></td>
   <td class="num">3,403.0</td>
-  <td class="num ">¥520.00</td>
-  <td class="num ">¥720.00</td>
+  <td class="num ">¥0.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥520.00</td>
   <td class="num">¥13.66</td>
-  <td class="num "><b>¥506.34</b></td>
+  <td class="num "><b>¥186.34</b></td>
   <td><span class="takeover-tag">隔夜接管</span></td>
 </tr>
 
@@ -164,10 +164,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">4</td>
   <td class="num">8,811.0</td>
   <td class="num">8,803.0</td>
-  <td class="num ">¥740.00</td>
-  <td class="num ">¥1,355.00</td>
+  <td class="num neg">−¥160.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥740.00</td>
   <td class="num">¥8.10</td>
-  <td class="num "><b>¥731.90</b></td>
+  <td class="num neg"><b>−¥88.10</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -178,10 +178,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">3</td>
   <td class="num">1,292.5</td>
   <td class="num">1,289.0</td>
-  <td class="num ">¥4,230.00</td>
-  <td class="num ">¥2,340.00</td>
+  <td class="num neg">−¥630.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥4,230.00</td>
   <td class="num">¥46.56</td>
-  <td class="num "><b>¥4,183.44</b></td>
+  <td class="num neg"><b>−¥226.56</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -192,10 +192,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">2</td>
   <td class="num">9,815.0</td>
   <td class="num">9,785.0</td>
-  <td class="num ">¥1,200.00</td>
-  <td class="num ">¥1,540.00</td>
+  <td class="num neg">−¥600.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥1,200.00</td>
   <td class="num">¥10.07</td>
-  <td class="num "><b>¥1,189.93</b></td>
+  <td class="num neg"><b>−¥410.07</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -207,9 +207,9 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">9,815.0</td>
   <td class="num">9,838.0</td>
   <td class="num ">¥230.00</td>
-  <td class="num ">¥230.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥230.00</td>
   <td class="num">¥10.07</td>
-  <td class="num "><b>¥219.93</b></td>
+  <td class="num "><b>¥319.93</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -220,10 +220,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">4</td>
   <td class="num">3,411.0</td>
   <td class="num">3,411.0</td>
-  <td class="num dim">—</td>
+  <td class="num ">¥0.00</td>
   <td class="num dim">—</td>
   <td class="num">¥27.38</td>
-  <td class="num "><b>¥200.00</b></td>
+  <td class="num "><b>¥172.62</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -234,10 +234,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">2</td>
   <td class="num">9,840.0</td>
   <td class="num">9,838.0</td>
-  <td class="num ">¥460.00</td>
-  <td class="num ">¥460.00</td>
+  <td class="num neg">−¥40.00</td>
+  <td class="num  dim" style="font-size:11.5px;">¥460.00</td>
   <td class="num">¥10.07</td>
-  <td class="num "><b>¥449.93</b></td>
+  <td class="num "><b>¥149.93</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -248,10 +248,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">1</td>
   <td class="num">9,840.0</td>
   <td class="num"><span class="dim">—</span></td>
-  <td class="num dim">—</td>
+  <td class="num "><span class="dim">—</span></td>
   <td class="num dim">—</td>
   <td class="num">¥7.55</td>
-  <td class="num "><b>¥0.00</b></td>
+  <td class="num "><b><span class="dim">—</span></b></td>
   <td>持有中</td>
 </tr>
 
@@ -262,10 +262,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">2</td>
   <td class="num">1,284.5</td>
   <td class="num">1,279.5</td>
-  <td class="num neg">−¥1,560.00</td>
-  <td class="num neg">−¥1,560.00</td>
+  <td class="num neg">−¥600.00</td>
+  <td class="num neg dim" style="font-size:11.5px;">−¥1,560.00</td>
   <td class="num">¥30.82</td>
-  <td class="num neg"><b>−¥1,590.82</b></td>
+  <td class="num neg"><b>−¥330.82</b></td>
   <td>已平仓</td>
 </tr>
 
@@ -276,10 +276,10 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <td class="num">4</td>
   <td class="num">8,793.0</td>
   <td class="num">8,800.0</td>
-  <td class="num neg">−¥130.00</td>
-  <td class="num neg">−¥130.00</td>
+  <td class="num ">¥140.00</td>
+  <td class="num neg dim" style="font-size:11.5px;">−¥130.00</td>
   <td class="num">¥8.10</td>
-  <td class="num neg"><b>−¥138.10</b></td>
+  <td class="num "><b>¥211.90</b></td>
   <td>已平仓</td>
 </tr>
 </tbody>
@@ -345,9 +345,9 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <h3>今日行情速览</h3>
   <p>当日 <b>HC</b> 主力合约整体<b>上涨 +0.21%</b> — 窗口起点 ¥3411.0, 最高 ¥3418.0, 最低 ¥3411.0, 收盘 ¥3418.0 (波动幅度 0.21%).</p><p>收盘指标: ADX=38.3 (强趋势, 阈值 22), PDI=35.8 &gt; MDI=11.0 (多头主导); Donchian 通道 3355.0 ~ 3426.0, 中轨 3390.5.</p>
   <h3>本策略动作</h3>
-  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-29 14:15:05 买入 4 手 @ ¥3403.0 <span class="muted">(state.json 自昨日恢复 own_pos)</span></p><p><b>当时仓位决策</b>: 原始信号 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.2) → 目标 4 手, 当时已持 0 手.</p><p><b>当时信号 (V8 Donchian+ADX)</b>: close=3402.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=33.1, PDI=28.2 &gt; MDI=15.5 — 趋势确认 ✓</p><p><b>平仓时间</b>: 21:04:59 · 卖出 4 手 @ ¥3403.0 (报价 ¥3398.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 ¥520.00, 逐笔 ¥720.00, 手续费 ¥13.66</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 10:00:05 · 买入 4 手 @ ¥3411.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.6, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V8 Donchian+ADX)</b>: close=3411.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=37.2 (阈值 22), PDI=33.2 &gt; MDI=12.1 — 趋势确认 ✓</p><p><b>平仓时间</b>: 13:32:59 · 卖出 4 手 @ ¥3411.0 (报价 ¥3406.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥3404.0 ≤ 移损线 ¥3405.8 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: 手续费 ¥27.38</p></div>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-29 14:15:05 买入 4 手 @ ¥3403.0 <span class="muted">(state.json 自昨日恢复 own_pos)</span></p><p><b>当时仓位决策</b>: 原始信号 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.2) → 目标 4 手, 当时已持 0 手.</p><p><b>当时信号 (V8 Donchian+ADX)</b>: close=3402.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=33.1, PDI=28.2 &gt; MDI=15.5 — 趋势确认 ✓</p><p><b>平仓时间</b>: 21:04:59 · 卖出 4 手 @ ¥3403.0 (报价 ¥3398.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥3403.0 − ¥3403.0) × 4 × 10 = ¥0.00; 滑点 ¥200.00; 手续费 ¥13.66 → <b>净 ¥186.34</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥520.00</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 10:00:05 · 买入 4 手 @ ¥3411.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=12.6, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V8 Donchian+ADX)</b>: close=3411.0, Donchian 上轨=3426.0, 中轨=3390.5; ADX=37.2 (阈值 22), PDI=33.2 &gt; MDI=12.1 — 趋势确认 ✓</p><p><b>平仓时间</b>: 13:32:59 · 卖出 4 手 @ ¥3411.0 (报价 ¥3406.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥3404.0 ≤ 移损线 ¥3405.8 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥3411.0 − ¥3411.0) × 4 × 10 = ¥0.00; 滑点 ¥200.00; 手续费 ¥27.38 → <b>净 ¥172.62</b></p></div>
   <h3>今日总结</h3>
-  <ul class="summary-list"><li>已平仓 <b>2</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>0</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥520.00</b>; 手续费: ¥41.04; 净 (broker − 手续费): <b class="">¥478.96</b>.</li></ul>
+  <ul class="summary-list"><li>已平仓 <b>2</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>0</b> 笔.</li><li>策略 FIFO 毛盈亏 (出 − 入)×手数×乘数: <b class="">¥0.00</b>; 滑点损益: <b class="">¥400.00</b>; 手续费: ¥41.04.</li><li><b>净盈亏 (策略真值)</b>: <b class="">¥358.96</b>.</li><li>broker 盯市对照 (含隔夜价差, 仅参考): <span class="muted">¥520.00</span>.</li></ul>
 </div>
 
 <div class="section">
@@ -356,9 +356,9 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <h3>今日行情速览</h3>
   <p>当日 <b>JM</b> 主力合约整体<b>下跌 -0.58%</b> — 窗口起点 ¥1292.0, 最高 ¥1292.0, 最低 ¥1284.5, 收盘 ¥1284.5 (波动幅度 0.58%).</p><p>收盘指标: MFI=48.7 (资金流出, 阈值 50); Donchian 通道 1217.0 ~ 1298.5, 中轨 1257.8.</p>
   <h3>本策略动作</h3>
-  <div class="action-block"><div class="action-title">动作 #1: 做多 3 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 3 手 @ ¥1292.5</p><p><b>仓位决策</b>: 原始信号强度 raw=3.63 → Carver vol target 算出 4 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1292.0, Donchian 上轨=1292.5, 中轨=1251.2; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 22:11:59 · 卖出 3 手 @ ¥1289.0 (报价 ¥1286.5, 滑点 -5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥4,230.00) 与当日 round-trip 的毛盈亏 (−¥630.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 ¥4,230.00, 逐笔 ¥2,340.00, 手续费 ¥46.56</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:05 · 买入 2 手 @ ¥1284.5</p><p><b>仓位决策</b>: 原始信号强度 raw=3.17 → Carver vol target 算出 3 手 (ATR=12.0, 资金 ¥1,000,000) → apply_buffer 后目标 2 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1284.5, Donchian 上轨=1298.5, 中轨=1257.8; MFI=48.7 (阈值 50) — 资金确认 △</p><p><b>平仓时间</b>: 13:31:59 · 卖出 2 手 @ ¥1279.5 (报价 ¥1277.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥1289.0 ≤ 移损线 ¥1289.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 −¥1,560.00, 逐笔 −¥1,560.00, 手续费 ¥30.82</p></div>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 3 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 3 手 @ ¥1292.5</p><p><b>仓位决策</b>: 原始信号强度 raw=3.63 → Carver vol target 算出 4 手 (ATR=12.2, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1292.0, Donchian 上轨=1292.5, 中轨=1251.2; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 22:11:59 · 卖出 3 手 @ ¥1289.0 (报价 ¥1286.5, 滑点 +5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥4,230.00) 与当日 round-trip 的毛盈亏 (−¥630.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥1289.0 − ¥1292.5) × 3 × 60 = −¥630.00; 滑点 ¥450.00; 手续费 ¥46.56 → <b>净 −¥226.56</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥4,230.00</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:05 · 买入 2 手 @ ¥1284.5</p><p><b>仓位决策</b>: 原始信号强度 raw=3.17 → Carver vol target 算出 3 手 (ATR=12.0, 资金 ¥1,000,000) → apply_buffer 后目标 2 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=1284.5, Donchian 上轨=1298.5, 中轨=1257.8; MFI=48.7 (阈值 50) — 资金确认 △</p><p><b>平仓时间</b>: 13:31:59 · 卖出 2 手 @ ¥1279.5 (报价 ¥1277.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥1289.0 ≤ 移损线 ¥1289.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥1279.5 − ¥1284.5) × 2 × 60 = −¥600.00; 滑点 ¥300.00; 手续费 ¥30.82 → <b>净 −¥330.82</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): −¥1,560.00</p></div>
   <h3>今日总结</h3>
-  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥2,670.00</b>; 手续费: ¥77.38; 净 (broker − 手续费): <b class="">¥2,592.62</b>.</li></ul>
+  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>策略 FIFO 毛盈亏 (出 − 入)×手数×乘数: <b class="neg">−¥1,230.00</b>; 滑点损益: <b class="">¥750.00</b>; 手续费: ¥77.38.</li><li><b>净盈亏 (策略真值)</b>: <b class="neg">−¥557.38</b>.</li><li>broker 盯市对照 (含隔夜价差, 仅参考): <span class="muted">¥2,670.00</span>.</li></ul>
 </div>
 
 <div class="section">
@@ -367,9 +367,9 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <h3>今日行情速览</h3>
   <p>当日 <b>P</b> 主力合约整体<b>上涨 +0.26%</b> — 窗口起点 ¥9815.0, 最高 ¥9841.0, 最低 ¥9815.0, 收盘 ¥9841.0 (波动幅度 0.26%).</p><p>收盘指标: MFI=56.7 (资金流入强, 阈值 50); Donchian 通道 9366.0 ~ 9900.0, 中轨 9633.0.</p>
   <h3>本策略动作</h3>
-  <div class="action-block"><div class="action-title">动作 #1: 做多 1 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-29 11:15:00 买入 1 手 @ ¥9724.0 <span class="muted">(state.json 自昨日恢复 own_pos)</span></p><p><b>当时仓位决策</b>: 原始信号 raw=2.61 → Carver vol target 算出 3 手 (ATR=66.4) → 目标 2 手, 当时已持 0 手.</p><p><b>当时信号 (V13 Donchian+MFI)</b>: close=9725.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=42.5 — 资金确认 △</p><p><b>平仓时间</b>: 22:27:59 · 卖出 1 手 @ ¥9785.0 (报价 ¥9775.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏</b>: broker 平仓盈亏 ¥600.00, 逐笔 ¥770.00, 手续费 ¥2.52</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 2 手 @ ¥9815.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.06 → Carver vol target 算出 4 手 (ATR=64.7, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9815.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=56.0 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 22:27:59 · 卖出 2 手 @ ¥9785.0 (报价 ¥9775.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥1,200.00) 与当日 round-trip 的毛盈亏 (−¥600.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 ¥1,200.00, 逐笔 ¥1,540.00, 手续费 ¥10.07</p></div><div class="action-block"><div class="action-title">动作 #3: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 1 手 @ ¥9815.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.06 → Carver vol target 算出 4 手 (ATR=64.7, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9815.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=56.0 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:31:59 · 卖出 1 手 @ ¥9838.0 (报价 ¥9828.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9785.0 ≤ 移损线 ¥9786.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥230.00, 逐笔 ¥230.00, 手续费 ¥10.07</p></div><div class="action-block"><div class="action-title">动作 #4: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:04 · 买入 2 手 @ ¥9840.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.31 → Carver vol target 算出 4 手 (ATR=61.8, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9841.0, Donchian 上轨=9900.0, 中轨=9633.0; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:31:59 · 卖出 2 手 @ ¥9838.0 (报价 ¥9828.0, 滑点 -5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9785.0 ≤ 移损线 ¥9786.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 ¥460.00, 逐笔 ¥460.00, 手续费 ¥10.07</p></div><div class="action-block"><div class="action-title">动作 #5: 做多 1 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 11:15:04 · 买入 1 手 @ ¥9840.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.31 → Carver vol target 算出 4 手 (ATR=61.8, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9841.0, Donchian 上轨=9900.0, 中轨=9633.0; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 1 手 @ ¥9840.0 过夜.</p></div>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 1 手 (隔夜接管 → 平仓)</div><p><b>开仓 (前日接管)</b>: 04-29 11:15:00 买入 1 手 @ ¥9724.0 <span class="muted">(state.json 自昨日恢复 own_pos)</span></p><p><b>当时仓位决策</b>: 原始信号 raw=2.61 → Carver vol target 算出 3 手 (ATR=66.4) → 目标 2 手, 当时已持 0 手.</p><p><b>当时信号 (V13 Donchian+MFI)</b>: close=9725.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=42.5 — 资金确认 △</p><p><b>平仓时间</b>: 22:27:59 · 卖出 1 手 @ ¥9785.0 (报价 ¥9775.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 隔夜接管的持仓在新窗口内被平仓 — 可能是策略启动后立即触发的移动止损 / 硬止损 / 信号反转.</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥9785.0 − ¥9724.0) × 1 × 10 = ¥610.00; 滑点 ¥100.00; 手续费 ¥2.52 → <b>净 ¥707.48</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥600.00</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 2 手 @ ¥9815.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.06 → Carver vol target 算出 4 手 (ATR=64.7, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9815.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=56.0 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 22:27:59 · 卖出 2 手 @ ¥9785.0 (报价 ¥9775.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥1,200.00) 与当日 round-trip 的毛盈亏 (−¥600.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥9785.0 − ¥9815.0) × 2 × 10 = −¥600.00; 滑点 ¥200.00; 手续费 ¥10.07 → <b>净 −¥410.07</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥1,200.00</p></div><div class="action-block"><div class="action-title">动作 #3: 做多 1 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:06 · 买入 1 手 @ ¥9815.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.06 → Carver vol target 算出 4 手 (ATR=64.7, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9815.0, Donchian 上轨=9900.0, 中轨=9550.0; MFI=56.0 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:31:59 · 卖出 1 手 @ ¥9838.0 (报价 ¥9828.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9785.0 ≤ 移损线 ¥9786.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥9838.0 − ¥9815.0) × 1 × 10 = ¥230.00; 滑点 ¥100.00; 手续费 ¥10.07 → <b>净 ¥319.93</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥230.00</p></div><div class="action-block"><div class="action-title">动作 #4: 做多 2 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:04 · 买入 2 手 @ ¥9840.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.31 → Carver vol target 算出 4 手 (ATR=61.8, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9841.0, Donchian 上轨=9900.0, 中轨=9633.0; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:31:59 · 卖出 2 手 @ ¥9838.0 (报价 ¥9828.0, 滑点 +5.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥9785.0 ≤ 移损线 ¥9786.6 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥9838.0 − ¥9840.0) × 2 × 10 = −¥40.00; 滑点 ¥200.00; 手续费 ¥10.07 → <b>净 ¥149.93</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥460.00</p></div><div class="action-block"><div class="action-title">动作 #5: 做多 1 手 (新开, 持仓中)</div><p><b>开仓时间</b>: 11:15:04 · 买入 1 手 @ ¥9840.0</p><p><b>仓位决策</b>: 原始信号强度 raw=4.31 → Carver vol target 算出 4 手 (ATR=61.8, 资金 ¥1,000,000) → apply_buffer 后目标 3 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=9841.0, Donchian 上轨=9900.0, 中轨=9633.0; MFI=56.7 (阈值 50) — 资金确认 ✓</p><p><b>当前状态</b>: 持仓中, 未触发平仓信号, 持有 1 手 @ ¥9840.0 过夜.</p></div>
   <h3>今日总结</h3>
-  <ul class="summary-list"><li>已平仓 <b>4</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>1</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥2,490.00</b>; 手续费: ¥40.27; 净 (broker − 手续费): <b class="">¥2,449.73</b>.</li><li>持仓过夜: 1 手 @ ¥9840.0 (11:15 开仓).</li></ul>
+  <ul class="summary-list"><li>已平仓 <b>4</b> 笔 (含 1 笔隔夜接管), 持仓中 <b>1</b> 笔.</li><li>策略 FIFO 毛盈亏 (出 − 入)×手数×乘数: <b class="">¥200.00</b>; 滑点损益: <b class="">¥600.00</b>; 手续费: ¥40.27.</li><li><b>净盈亏 (策略真值)</b>: <b class="">¥759.73</b>.</li><li>broker 盯市对照 (含隔夜价差, 仅参考): <span class="muted">¥2,490.00</span>.</li><li>持仓过夜: 1 手 @ ¥9840.0 (11:15 开仓).</li></ul>
 </div>
 
 <div class="section">
@@ -378,14 +378,14 @@ tr:last-child td { border-bottom: 1px solid #d0d0d0; }
   <h3>今日行情速览</h3>
   <p>当日 <b>PP</b> 主力合约整体<b>下跌 -0.24%</b> — 窗口起点 ¥8812.0, 最高 ¥8812.0, 最低 ¥8791.0, 收盘 ¥8791.0 (波动幅度 0.24%).</p><p>收盘指标: MFI=75.6 (资金流入强, 阈值 50); Donchian 通道 8116.0 ~ 8848.0, 中轨 8482.0.</p>
   <h3>本策略动作</h3>
-  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:03 · 买入 4 手 @ ¥8811.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=67.4, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8812.0, Donchian 上轨=8814.0, 中轨=8465.0; MFI=86.9 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 09:08:59 · 卖出 4 手 @ ¥8803.0 (报价 ¥8799.0, 滑点 -4.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥740.00) 与当日 round-trip 的毛盈亏 (−¥160.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏</b>: broker 平仓盈亏 ¥740.00, 逐笔 ¥1,355.00, 手续费 ¥8.10</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:05 · 买入 4 手 @ ¥8793.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=64.2, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8791.0, Donchian 上轨=8848.0, 中轨=8482.0; MFI=75.6 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:48:00 · 卖出 4 手 @ ¥8800.0 (报价 ¥8796.0, 滑点 -4.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥8801.0 ≤ 移损线 ¥8805.5 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏</b>: broker 平仓盈亏 −¥130.00, 逐笔 −¥130.00, 手续费 ¥8.10</p></div>
+  <div class="action-block"><div class="action-title">动作 #1: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 22:00:03 · 买入 4 手 @ ¥8811.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=67.4, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8812.0, Donchian 上轨=8814.0, 中轨=8465.0; MFI=86.9 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 09:08:59 · 卖出 4 手 @ ¥8803.0 (报价 ¥8799.0, 滑点 +4.0 跳)</p><p><b>触发条件</b>: (未捕获到 EXEC_STOP / TRAIL_STOP 日志). broker 平仓盈亏 (¥740.00) 与当日 round-trip 的毛盈亏 (−¥160.00) 差异较大, 可能实际平的是隔夜接管的持仓 (state.json 自昨日恢复, CSV 不可见).</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥8803.0 − ¥8811.0) × 4 × 5 = −¥160.00; 滑点 ¥80.00; 手续费 ¥8.10 → <b>净 −¥88.10</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): ¥740.00</p></div><div class="action-block"><div class="action-title">动作 #2: 做多 4 手 (开 → 平 完整 round-trip)</div><p><b>开仓时间</b>: 11:15:05 · 买入 4 手 @ ¥8793.0</p><p><b>仓位决策</b>: 原始信号强度 raw=5.00 → Carver vol target 算出 5 手 (ATR=64.2, 资金 ¥1,000,000) → apply_buffer 后目标 4 手, 当时已持 0 手.</p><p><b>信号详情 (V13 Donchian+MFI)</b>: close=8791.0, Donchian 上轨=8848.0, 中轨=8482.0; MFI=75.6 (阈值 50) — 资金确认 ✓</p><p><b>平仓时间</b>: 13:48:00 · 卖出 4 手 @ ¥8800.0 (报价 ¥8796.0, 滑点 +4.0 跳)</p><p><b>触发条件</b>: 移动止损 — 当前价 ¥8801.0 ≤ 移损线 ¥8805.5 (peak × (1 - trailing_pct%) 公式生成)</p><p><b>盈亏 (策略 FIFO 真值)</b>: 毛盈亏 (¥8800.0 − ¥8793.0) × 4 × 5 = ¥140.00; 滑点 ¥80.00; 手续费 ¥8.10 → <b>净 ¥211.90</b></p><p class="muted"><b>broker 盯市对照</b> (含隔夜价差, 仅参考): −¥130.00</p></div>
   <h3>今日总结</h3>
-  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>broker 平仓盈亏: <b class="">¥610.00</b>; 手续费: ¥16.20; 净 (broker − 手续费): <b class="">¥593.80</b>.</li></ul>
+  <ul class="summary-list"><li>已平仓 <b>2</b> 笔, 持仓中 <b>0</b> 笔.</li><li>策略 FIFO 毛盈亏 (出 − 入)×手数×乘数: <b class="neg">−¥20.00</b>; 滑点损益: <b class="">¥160.00</b>; 手续费: ¥16.20.</li><li><b>净盈亏 (策略真值)</b>: <b class="">¥123.80</b>.</li><li>broker 盯市对照 (含隔夜价差, 仅参考): <span class="muted">¥610.00</span>.</li></ul>
 </div>
 
 
   <div class="footer">
-    生成时间 2026-04-30 15:10:03
+    生成时间 2026-04-30 15:17:29
     　|　工具:tools/daily_report
      · 数据源: broker CSV (主) + StraLog (上下文)
   </div>
