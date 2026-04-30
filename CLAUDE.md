@@ -107,9 +107,12 @@ docs/
     └── RESEARCH_REPORT.md
 
 tools/daily_report/                   # ★ 每日实盘日报 (HTML + PDF)
-                                       #   broker CSV 主源 (盈亏/手续费/撤单 真值)
-                                       #   StraLog 辅源 (信号/风控/原因 上下文)
-                                       #   隔夜接管孤儿平仓自动识别 (TAKEOVER 标记)
+                                       #   broker CSV 主源 (成交真值)
+                                       #   StraLog 辅源 (信号/风控/上下文 + ON_START 状态校准)
+                                       #   净盈亏 = 策略 FIFO 毛 (出-入)×手数×乘数 + 滑点 − 手续费
+                                       #   broker 盯市仅作对照 (含隔夜价差不反映真实操作)
+                                       #   3 层校准: prev_carryover / 孤儿 takeover / 持有中 手动单
+                                       #   中文叙述风格点评 + 波段单/趋势单类型标签
                                        #   image_map.json 支持 hash 命名截图
 
 reports/                              # 每日 data + HTML/PDF 报告
@@ -385,6 +388,55 @@ from modules.error_handler import throttle_on_error
 | GFEX 无夜盘 | 4 | `252 × 4` |
 
 ## 迭代历史
+
+### 2026-04-30 — daily_report 标准定型 (策略 FIFO 净盈亏 + 中文点评 + startup 校准)
+
+**核心问题**: 旧版用 broker_pnl - fee 当净盈亏是错的. broker"平仓盈亏"是逐日盯市
+口径 (用昨结算价基准, 含隔夜价差), 不反映策略实际开平表现. PythonGO 是 FIFO 撮合 —
+净盈亏必须用入场价和出场价配对算才是策略真值.
+
+**新口径** (永久标准):
+```
+毛盈亏 = (出场价 - 入场价) × 手数 × 乘数      [long]
+滑点损益 = slip_ticks × tick_size × 手数 × 乘数  [正=有利]
+净盈亏 = 毛盈亏 + 滑点损益 − 手续费
+broker 盯市 → 仅作对照参考 (灰字, 含隔夜价差)
+```
+
+**Strategy startup 状态校准** (3 层过滤手动单 / broker 异常):
+- 启动 own_pos=0 但 prev_carryover 推出过夜持仓 → 忽略
+- 孤儿 takeover (entry.fill_price=0 + startup own_pos=0) → 过滤
+- 持有中 round-trip + startup own_pos=0 + 当日无 strategy ON_TRADE → 过滤 (手动单)
+
+**4-30 实证**: round-trips 11 → 8 (过滤 P 手动 1 手 + 2 笔虚假 carryover)
+- JM 22:00 真盈亏 -¥630 (策略选时亏), broker +¥4,230 (隔夜价差) — 完全两码事
+- P 11:15 入 9840 > 出 9838 (毛 -¥60), 滑点 +¥300, 净 +¥224.90 — "入>出但赚钱"是合法的
+- 当日总净盈亏: 旧版 broker +¥6,115 → 新版策略真值 -¥464.82
+
+**中文点评风格** (替代旧 pivot box, 2026-04-29 起):
+每品种 section: 配图 + 今日行情速览 (涨跌幅 + 收盘指标解读) + 本策略动作 (按时间逐笔
+叙述: 仓位决策 + 信号详情 ✓/△ + 平仓触发 + 盈亏公式) + 今日总结
+
+**策略类型标签**: 蓝色"波段单" / 紫色"趋势单". 当前 7 个 V8/V13 + 4 个 QExp 全是
+波段单. ICT v6 上线时改 `_STRATEGY_TYPES["I"] = "trend"` 即可
+
+**carryover 自动注入**: 自动找前日 reports/ 推持仓 → entry leg 注入前日 StraLog 决策
+上下文 (raw / IND / forecast). HC 4-29 carryover 实证: "开仓 (前日接管): 04-29
+14:15:05 买入 4 手 @ ¥3403; 当时仓位决策: raw=5.00 → 5 手 → target 4 手; 当时
+信号 (V8): close=3402 ADX=33.1 PDI=28 > MDI=15 — 趋势确认 ✓"
+
+**image_map.json**: hash 命名图无需手动 mv, 加映射文件即可.
+
+**整体改动文件**:
+- 新 `tools/daily_report/csv_parser.py` (270 行): GBK + 41 列 + 21:00 边界 + compute_carryover
+- `log_parser.py` 加 `parse_startup_states()`: grep [ON_START 恢复] own_pos/avg/peak
+- `trade_pairing.py`: TradeLeg 加 broker 字段 + RoundTrip is_takeover; pair_from_csv 加
+  prev_carryover + prev_log_events 参数; 三层 startup 校准
+- `render_html.py`: 主表加滑点列 + 净盈亏改用 strategy FIFO + 中文叙述 helpers (5 个) +
+  类型标签
+- `generate_report.py`: 自动找前日 dir + image_map.json 支持 + 校准过滤
+
+302 pytest 全绿. 详见 `tools/daily_report/README.md`.
 
 ### 2026-04-28 (晚) — daily_report 改造为 broker CSV 主源
 
